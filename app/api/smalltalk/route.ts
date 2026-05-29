@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { appendDailyLog, getState, updateState } from '@/lib/supabase'
-import { callAssistantLLM } from '@/lib/llm'
+import { appendDailyLog, getState, updateState, supabase } from '@/lib/supabase'
+import { callAssistantLLM, callAssistantLLMWithProvider } from '@/lib/llm'
 
 export async function POST(req: NextRequest) {
-  const { messages, action } = await req.json()
+  const { messages, action, provider } = await req.json()
 
   // 세션 저장 요청: 간단 요약 JSON을 생성해 저장
   if (action === 'save_session') {
@@ -33,8 +33,13 @@ ${messages.map((m: any) => `${m.role}: ${m.content}`).join('\n')}` },
   // 일반 잡담 채팅
   const systemPrompt = `너는 가볍게 수다 떠는 잡담 비서야. 친근하고 짧은 응답을 선호해. 한국어로 대화해.`
 
-  const result = await callAssistantLLM(messages, systemPrompt)
-  // 다른 API들과 동일하게 응답 앞에 공급자 표시를 붙여 반환한다.
+  const result = await callAssistantLLMWithProvider(messages, systemPrompt, provider)
+  // 실패 제한 초과된 공급자를 UI에 전달
+  const { data } = await supabase.from('llm_state').select('error_counts').eq('id', 1).single()
+  const disabledProviders = Object.entries(data?.error_counts || {})
+    .filter(([, count]) => count >= 3)
+    .map(([p]) => p)
+
   const content = `[${result.provider}] ${result.content}`
-  return NextResponse.json({ content, provider: result.provider })
+  return NextResponse.json({ content, provider: result.provider, disabledProviders })
 }

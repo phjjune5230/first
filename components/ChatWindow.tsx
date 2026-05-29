@@ -14,6 +14,8 @@ type Props = {
   greeting: string
   onSessionSaved?: () => void
   extraHeader?: React.ReactNode
+  extraRequestData?: Record<string, unknown>
+  onApiResponse?: (data: any) => void
   processContent?: (content: string) => string
 }
 
@@ -24,6 +26,8 @@ export default function ChatWindow({
   greeting,
   onSessionSaved,
   extraHeader,
+  extraRequestData,
+  onApiResponse,
   processContent,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([])
@@ -54,9 +58,10 @@ export default function ChatWindow({
       const res = await fetch(apiPath, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: newMessages }),
+        body: JSON.stringify({ messages: newMessages, ...(extraRequestData ?? {}) }),
       })
       const data = await res.json()
+      onApiResponse?.(data)
       const content = processContent ? processContent(data.content) : data.content
       setMessages([...newMessages, { role: 'assistant', content }])
     } catch (e) {
@@ -74,7 +79,7 @@ export default function ChatWindow({
       const res = await fetch(apiPath, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages, action: 'save_session' }),
+        body: JSON.stringify({ messages, action: 'save_session', ...(extraRequestData ?? {}) }),
       })
       const data = await res.json()
       if (data.ok) {

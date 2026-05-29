@@ -1,9 +1,9 @@
 import { supabase } from './supabase'
 
 // ↓ 기능별 LLM 우선순위 설정
-const ENGLISH_LLM_PRIORITY = ['gemini', 'groq', 'openai', 'deepseek', 'kimi', 'glm', 'grok', 'claude']
-const ASSISTANT_LLM_PRIORITY = ['groq', 'gemini', 'openai', 'deepseek', 'kimi', 'glm', 'grok', 'claude']
-const STOCK_LLM_PRIORITY = ['gemini', 'groq', 'openai', 'deepseek', 'kimi', 'glm', 'grok', 'claude']
+export const ENGLISH_LLM_PRIORITY = ['gemini', 'groq', 'openai', 'deepseek', 'kimi', 'glm', 'grok', 'claude']
+export const ASSISTANT_LLM_PRIORITY = ['groq', 'gemini', 'openai', 'deepseek', 'kimi', 'glm', 'grok', 'claude']
+export const STOCK_LLM_PRIORITY = ['gemini', 'groq', 'openai', 'deepseek', 'kimi', 'glm', 'grok', 'claude']
 
 // ↓ 리셋 방식 설정: 'midnight' | 'hours'
 const RESET_MODE: 'midnight' | 'hours' = 'midnight'
@@ -182,32 +182,41 @@ async function callProvider(provider: string, messages: { role: string; content:
   throw new Error(`Unknown provider: ${provider}`)
 }
 
-async function callLLMWithPriority(messages: { role: string; content: string }[], systemPrompt: string, priority: string[]): Promise<CallLLMResult> {
+async function callLLMWithPriority(messages: { role: string; content: string }[], systemPrompt: string, priority: string[], selectedProvider?: string): Promise<CallLLMResult> {
   const state = await getLLMState()
   let provider = state.current_provider
 
-  // state.current_provider가 비어있거나 현재 호출용 우선순위 배열에
-  // 포함되어 있지 않다면 우선순위의 첫 번째 공급자를 시작점으로 사용한다.
-  if (!provider || !priority.includes(provider)) {
-    provider = priority[0]
+  const invalidProviders = Object.entries(state.error_counts)
+    .filter(([, count]) => count >= ERROR_THRESHOLD)
+    .map(([p]) => p)
+
+  if (selectedProvider && !invalidProviders.includes(selectedProvider) && priority.includes(selectedProvider)) {
+    provider = selectedProvider
+  } else if (!provider || !priority.includes(provider) || invalidProviders.includes(provider)) {
+    provider = priority.find((p) => !invalidProviders.includes(p)) || priority[0]
   }
 
   const startIdx = priority.indexOf(provider)
   const orderedProviders = startIdx >= 0 ? [...priority.slice(startIdx), ...priority.slice(0, startIdx)] : priority
 
   for (const p of orderedProviders) {
+    if (invalidProviders.includes(p)) {
+      console.log(`[LLM] ${p}는 에러 제한 초과로 건너뜁니다.`)
+      continue
+    }
+
     try {
       console.log(`[LLM] 호출: ${p}`)
       const result = await callProvider(p, messages, systemPrompt)
       return { content: result, provider: p }
     } catch (err: unknown) {
       const status = (err as { status?: number })?.status
+      console.log(`[LLM] ${p} 호출 실패:`, err)
+      await recordError(p, state, priority)
       if (status === 429 || status === 503) {
-        console.log(`${p} 에러 (${status}), 기록 중...`)
-        await recordError(p, await getLLMState(), priority)
         continue
       }
-      throw err
+      continue
     }
   }
 
@@ -220,6 +229,10 @@ export async function callEnglishLLM(messages: { role: string; content: string }
 
 export async function callAssistantLLM(messages: { role: string; content: string }[], systemPrompt: string): Promise<CallLLMResult> {
   return callLLMWithPriority(messages, systemPrompt, ASSISTANT_LLM_PRIORITY)
+}
+
+export async function callAssistantLLMWithProvider(messages: { role: string; content: string }[], systemPrompt: string, selectedProvider?: string): Promise<CallLLMResult> {
+  return callLLMWithPriority(messages, systemPrompt, ASSISTANT_LLM_PRIORITY, selectedProvider)
 }
 
 export async function callStockLLM(messages: { role: string; content: string }[], systemPrompt: string): Promise<CallLLMResult> {
