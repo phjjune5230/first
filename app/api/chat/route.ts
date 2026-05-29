@@ -1,3 +1,4 @@
+export const dynamic = 'force-dynamic'
 import OpenAI from 'openai'
 import { NextRequest, NextResponse } from 'next/server'
 import { getState, appendDailyLog, updateState, DailyLog } from '@/lib/supabase'
