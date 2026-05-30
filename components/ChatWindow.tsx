@@ -39,6 +39,7 @@ export default function ChatWindow({
   const [sessionActive, setSessionActive] = useState(false)
   const [selectedLang, setSelectedLang] = useState<TTSLanguage>('en-US')
   const [speaking, setSpeaking] = useState(false)
+  const [showUndoButton, setShowUndoButton] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -106,6 +107,7 @@ export default function ChatWindow({
             content: `✅ 저장 완료!\n📝 요약: ${data.log.summary}\n💡 메모: ${data.log.notes}`,
           },
         ])
+        setShowUndoButton(true)
         onSessionSaved?.()
       }
     } catch (e) {
@@ -113,6 +115,33 @@ export default function ChatWindow({
     } finally {
       setLoading(false)
       setSessionActive(false)
+    }
+  }
+
+  async function undoDay() {
+    setLoading(true)
+    try {
+      const res = await fetch(apiPath, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'undo_day' }),
+      })
+      const data = await res.json()
+      if (data.ok) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: data.message,
+          },
+        ])
+        setShowUndoButton(false)
+        onSessionSaved?.()
+      }
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -192,6 +221,17 @@ export default function ChatWindow({
             </div>
           </div>
         ))}
+        {showUndoButton && (
+          <div className="px-4 py-3 rounded-sm text-xs">
+            <button
+              onClick={undoDay}
+              disabled={loading}
+              className="border border-[#333] px-3 py-1.5 rounded hover:border-[#e8ff47] hover:text-[#e8ff47] transition-colors disabled:opacity-40"
+            >
+              다시 하기
+            </button>
+          </div>
+        )}
         {loading && (
           <div className="msg-assistant px-4 py-3 rounded-sm text-sm text-[#555]">
             <span className="text-xs font-medium mr-2">ai</span>

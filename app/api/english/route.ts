@@ -31,6 +31,14 @@ ${messages.map((m: { role: string; content: string }) => `${m.role}: ${m.content
     }
   }
 
+  if (action === 'undo_day') {
+    if (state && state.current_day > 1) {
+      await updateState({ current_day: state.current_day - 1 })
+      return NextResponse.json({ ok: true, message: `${state.current_day - 1}일차로 되돌렸어요.` })
+    }
+    return NextResponse.json({ ok: false, error: '첫 날이라 되돌릴 수 없어요.' })
+  }
+
   const systemPrompt = buildSystemPrompt(state)
   const result = await callEnglishLLM(messages, systemPrompt)
   const content = `[${result.provider}] ${result.content}`
