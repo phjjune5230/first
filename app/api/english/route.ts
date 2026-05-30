@@ -132,6 +132,8 @@ function buildSystemPrompt(state: Awaited<ReturnType<typeof getState>>) {
 [약점] ${weakPoints.length > 0 ? weakPoints.join(', ') : '없음'}
 오늘 학습 시작할 때 지난 내용 리뷰하고 오늘 할 것 안내해줘. 문법/표현 교정 자연스럽게 해줘.
 
+한국어로 대화해.
+
 응답은 반드시 다음 JSON 형식으로만 반환해. 다른 설명이나 추가 텍스트는 포함하지 마.
 {
   "text": "상세 설명 텍스트",
