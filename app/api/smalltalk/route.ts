@@ -37,7 +37,7 @@ ${messages.map((m: any) => `${m.role}: ${m.content}`).join('\n')}` },
   // 실패 제한 초과된 공급자를 UI에 전달
   const { data } = await supabase.from('llm_state').select('error_counts').eq('id', 1).single()
   const disabledProviders = Object.entries(data?.error_counts || {})
-    .filter(([, count]) => count >= 3)
+    .filter(([, count]) => typeof count === 'number' && count >= 3)
     .map(([p]) => p)
 
   const content = `[${result.provider}] ${result.content}`

@@ -3,12 +3,17 @@ import OpenAI from 'openai'
 import { NextRequest, NextResponse } from 'next/server'
 import { getState, appendDailyLog, updateState, DailyLog } from '@/lib/supabase'
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 const MODEL = 'gpt-4o-mini'
 
 export async function POST(req: NextRequest) {
   const body = await req.json()
   const { messages, action } = body
+
+  const apiKey = process.env.OPENAI_API_KEY || process.env.OPENAI_ADMIN_KEY
+  if (!apiKey) {
+    return NextResponse.json({ ok: false, error: 'Missing OPENAI_API_KEY or OPENAI_ADMIN_KEY' }, { status: 500 })
+  }
+  const openai = new OpenAI({ apiKey })
 
   const state = await getState()
 
