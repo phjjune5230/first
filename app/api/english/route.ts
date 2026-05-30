@@ -46,7 +46,9 @@ ${messages.map((m: { role: string; content: string }) => `${m.role}: ${m.content
   const disabledProviders = Object.entries(data?.error_counts || {})
     .filter(([, count]) => typeof count === 'number' && count >= 3)
     .map(([p]) => p)
-  const content = `[${result.provider}] ${result.content}`
+
+  const parsedResult = parseExampleResponse(result.content)
+  const content = parsedResult.text ? `[${result.provider}] ${parsedResult.text}` : `[${result.provider}] ${result.content}`
 
   if (result.content.includes('[CURRICULUM_READY]')) {
     const jsonMatch = result.content.match(/\[CURRICULUM_READY\]\s*({[\s\S]*})/)
@@ -58,7 +60,30 @@ ${messages.map((m: { role: string; content: string }) => `${m.role}: ${m.content
     }
   }
 
-  return NextResponse.json({ content, provider: result.provider, disabledProviders })
+  return NextResponse.json({ content, provider: result.provider, disabledProviders, examples: parsedResult.examples })
+}
+
+function parseExampleResponse(raw: string) {
+  const cleaned = raw.replace(/```json|```/g, '').trim()
+  try {
+    const parsed = JSON.parse(cleaned)
+    if (parsed && typeof parsed === 'object' && Array.isArray((parsed as any).examples)) {
+      const examples = (parsed as any).examples
+        .filter((item: any) => item && typeof item === 'object')
+        .map((item: any) => ({
+          speaker: String(item.speaker || item.role || 'Example'),
+          sentence: String(item.sentence ?? item.text ?? ''),
+        }))
+        .filter((item: any) => item.sentence)
+      return {
+        text: typeof parsed.text === 'string' ? parsed.text.trim() : '',
+        examples,
+      }
+    }
+  } catch {
+    // fallback
+  }
+  return { text: '', examples: [] }
 }
 
 function buildSystemPrompt(state: Awaited<ReturnType<typeof getState>>) {
@@ -86,5 +111,14 @@ function buildSystemPrompt(state: Awaited<ReturnType<typeof getState>>) {
 [이번 주 계획] ${state.curriculum.weekly_plan?.[state.current_week - 1] || '계획 없음'}
 [최근 학습] ${recentLogs.length > 0 ? recentLogs.map(l => `${l.date}: ${l.summary}`).join(' / ') : '없음'}
 [약점] ${weakPoints.length > 0 ? weakPoints.join(', ') : '없음'}
-오늘 학습 시작할 때 지난 내용 리뷰하고 오늘 할 것 안내해줘. 문법/표현 교정 자연스럽게 해줘.`
+오늘 학습 시작할 때 지난 내용 리뷰하고 오늘 할 것 안내해줘. 문법/표현 교정 자연스럽게 해줘.
+
+응답은 반드시 다음 JSON 형식으로만 반환해. 다른 설명이나 추가 텍스트는 포함하지 마.
+{
+  "text": "상세 설명 텍스트",
+  "examples": [
+    { "speaker": "Teacher", "sentence": "Hello, how are you?" },
+    { "speaker": "Student", "sentence": "I'm fine, thank you." }
+  ]
+}`
 }

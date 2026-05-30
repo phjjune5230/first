@@ -6,6 +6,7 @@ import { speakText, type TTSLanguage, getLanguageLabel, getAllLanguages } from '
 export type Message = {
   role: 'user' | 'assistant'
   content: string
+  speaker?: string
 }
 
 type Props = {
@@ -79,8 +80,25 @@ export default function ChatWindow({
       })
       const data = await res.json()
       onApiResponse?.(data)
-      const content = processContent ? processContent(data.content) : data.content
-      setMessages([...newMessages, { role: 'assistant', content }])
+
+      const content = processContent ? processContent(data.content ?? data.text ?? '') : data.content ?? data.text ?? ''
+      const nextMessages: Message[] = [...newMessages]
+
+      if (Array.isArray(data.examples)) {
+        if (content) {
+          nextMessages.push({ role: 'assistant', content })
+        }
+        data.examples.forEach((item: any) => {
+          if (!item || typeof item !== 'object') return
+          const sentence = item.sentence ?? item.text ?? ''
+          if (!sentence) return
+          nextMessages.push({ role: 'assistant', content: sentence, speaker: item.speaker ?? 'Example' })
+        })
+      } else {
+        nextMessages.push({ role: 'assistant', content })
+      }
+
+      setMessages(nextMessages)
     } catch (e) {
       console.error(e)
     } finally {
@@ -204,7 +222,7 @@ export default function ChatWindow({
         {messages.map((msg, i) => (
           <div key={i} className={`px-4 py-3 rounded-sm text-sm leading-relaxed whitespace-pre-wrap ${msg.role === 'user' ? 'msg-user' : 'msg-assistant'}`}>
             <span className={`text-xs font-medium mr-2 ${msg.role === 'user' ? 'text-[#e8ff47]' : 'text-[#555]'}`}>
-              {msg.role === 'user' ? 'you' : 'ai'}
+              {msg.role === 'user' ? 'you' : msg.speaker ? msg.speaker : 'ai'}
             </span>
             <div className="inline-block">
               {msg.content}
