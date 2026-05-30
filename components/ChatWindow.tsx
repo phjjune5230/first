@@ -94,7 +94,7 @@ export default function ChatWindow({
       const res = await fetch(apiPath, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: newMessages, ...(extraRequestData ?? {}) }),
+        body: JSON.stringify({ messages: newMessages.map(({ role, content }) => ({ role, content })), ...(extraRequestData ?? {}) }),
       })
       const data = await res.json()
       onApiResponse?.(data)
@@ -110,7 +110,7 @@ export default function ChatWindow({
           if (!item || typeof item !== 'object') return
           const text = item.sentence ?? item.text ?? ''  // ← sentence 대신 text 변수명 사용
           if (!text) return
-          nextMessages.push({ role: 'assistant', content: text })  // ← speaker 필드 제거
+          nextMessages.push({ role: 'assistant', content: text, speaker: item.speaker ?? 'Example' })  // ← speaker 필드 제거
         })
       } else {
         nextMessages.push({ role: 'assistant', content })
