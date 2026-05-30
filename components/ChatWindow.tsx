@@ -108,9 +108,9 @@ export default function ChatWindow({
         }
         data.examples.forEach((item: any) => {
           if (!item || typeof item !== 'object') return
-          const sentence = item.sentence ?? item.text ?? ''
-          if (!sentence) return
-          nextMessages.push({ role: 'assistant', content: sentence, speaker: item.speaker ?? 'Example' })
+          const text = item.sentence ?? item.text ?? ''  // ← sentence 대신 text 변수명 사용
+          if (!text) return
+          nextMessages.push({ role: 'assistant', content: text })  // ← speaker 필드 제거
         })
       } else {
         nextMessages.push({ role: 'assistant', content })
