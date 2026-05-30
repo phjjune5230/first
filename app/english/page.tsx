@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react'
 import ChatWindow from '@/components/ChatWindow'
 import { getState, updateState, StudyState } from '@/lib/supabase'
-import { ENGLISH_LLM_PRIORITY } from '@/lib/llm'
+import { ALL_PROVIDERS } from '@/lib/llm'
 
 export default function EnglishPage() {
   const [state, setState] = useState<StudyState | null>(null)
@@ -11,8 +11,7 @@ export default function EnglishPage() {
   const [editMode, setEditMode] = useState(false)
   const [editWeek, setEditWeek] = useState(1)
   const [editDay, setEditDay] = useState(1)
-  const [selectedProvider, setSelectedProvider] = useState('')
-  const [disabledProviders, setDisabledProviders] = useState<string[]>([])
+  const [selectedProvider, setSelectedProvider] = useState(ALL_PROVIDERS[0])
 
   useEffect(() => {
     loadState()
@@ -93,28 +92,16 @@ export default function EnglishPage() {
                 onChange={(e) => setSelectedProvider(e.target.value)}
                 className="bg-[#111] border border-[#333] text-white rounded px-2 py-1 outline-none"
               >
-                <option value="">자동 선택</option>
-                {ENGLISH_LLM_PRIORITY.map((provider) => (
-                  <option key={provider} value={provider} disabled={disabledProviders.includes(provider)}>
-                    {provider}{disabledProviders.includes(provider) ? ' (비활성)' : ''}
+                {ALL_PROVIDERS.map((provider) => (
+                  <option key={provider} value={provider}>
+                    {provider}
                   </option>
                 ))}
               </select>
             </div>
-            {disabledProviders.length > 0 && (
-              <p className="text-[10px] text-[#555]">비활성 LLM: {disabledProviders.join(', ')}</p>
-            )}
           </div>
         }
         extraRequestData={selectedProvider ? { provider: selectedProvider } : undefined}
-        onApiResponse={(data) => {
-          if (Array.isArray(data?.disabledProviders)) {
-            setDisabledProviders(data.disabledProviders)
-            if (data.disabledProviders.includes(selectedProvider)) {
-              setSelectedProvider('')
-            }
-          }
-        }}
       />
 
       {editMode && (

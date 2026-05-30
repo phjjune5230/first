@@ -2,11 +2,10 @@
 
 import { useState } from 'react'
 import ChatWindow from '@/components/ChatWindow'
-import { ASSISTANT_LLM_PRIORITY } from '@/lib/llm'
+import { ALL_PROVIDERS } from '@/lib/llm'
 
 export default function SmalltalkPage() {
-  const [selectedProvider, setSelectedProvider] = useState('')
-  const [disabledProviders, setDisabledProviders] = useState<string[]>([])
+  const [selectedProvider, setSelectedProvider] = useState(ALL_PROVIDERS[0])
 
   return (
     <ChatWindow
@@ -23,30 +22,16 @@ export default function SmalltalkPage() {
               onChange={(e) => setSelectedProvider(e.target.value)}
               className="bg-[#111] border border-[#333] text-white text-xs rounded px-2 py-1 outline-none"
             >
-              <option value="">자동 선택</option>
-              {ASSISTANT_LLM_PRIORITY.map((provider) => (
-                <option key={provider} value={provider} disabled={disabledProviders.includes(provider)}>
-                  {provider}{disabledProviders.includes(provider) ? ' (비활성)' : ''}
+              {ALL_PROVIDERS.map((provider) => (
+                <option key={provider} value={provider}>
+                  {provider}
                 </option>
               ))}
             </select>
           </div>
-          {disabledProviders.length > 0 && (
-            <p className="text-[10px] text-[#555]">
-              비활성 LLM: {disabledProviders.join(', ')}
-            </p>
-          )}
         </div>
       }
-      extraRequestData={selectedProvider ? { provider: selectedProvider } : undefined}
-      onApiResponse={(data) => {
-        if (Array.isArray(data?.disabledProviders)) {
-          setDisabledProviders(data.disabledProviders)
-          if (data.disabledProviders.includes(selectedProvider)) {
-            setSelectedProvider('')
-          }
-        }
-      }}
+      extraRequestData={{ provider: selectedProvider }}
     />
   )
 }

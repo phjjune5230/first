@@ -1,9 +1,7 @@
 import { supabase } from './supabase'
 
-// ↓ 기능별 LLM 우선순위 설정
-export const ENGLISH_LLM_PRIORITY = ['gemini', 'groq', 'gpt-oss', 'openai', 'deepseek', 'kimi', 'glm', 'grok', 'claude']
-export const ASSISTANT_LLM_PRIORITY = ['groq', 'gemini', 'gpt-oss', 'openai', 'deepseek', 'kimi', 'glm', 'grok', 'claude']
-export const STOCK_LLM_PRIORITY = ['gemini', 'groq', 'gpt-oss', 'openai', 'deepseek', 'kimi', 'glm', 'grok', 'claude']
+// ↓ 사용 가능한 모든 LLM 목록
+export const ALL_PROVIDERS = ['gemini', 'groq', 'openai', 'deepseek', 'kimi', 'glm', 'grok', 'claude', 'gpt-oss']
 
 // ↓ 리셋 방식 설정: 'midnight' | 'hours'
 const RESET_MODE: 'midnight' | 'hours' = 'midnight'
@@ -24,8 +22,6 @@ type CallLLMResult = {
 async function getLLMState(): Promise<LLMState> {
   const { data } = await supabase.from('llm_state').select('*').eq('id', 1).single()
   return {
-    // DB에 값이 없을 때 특정 공급자('gemini')로 강제하지 않고
-    // 빈 문자열을 반환해 호출 시 우선순위 배열의 첫 항목을 사용하도록 한다.
     current_provider: data?.current_provider || '',
     error_counts: data?.error_counts || {},
     last_error_at: data?.last_error_at || {},
@@ -50,7 +46,7 @@ function shouldReset(provider: string, state: LLMState): boolean {
   }
 }
 
-async function recordError(provider: string, state: LLMState, priority: string[]) {
+async function recordError(provider: string, state: LLMState, priority?: string[]) {
   const errorCounts = { ...state.error_counts }
   const lastErrorAt = { ...state.last_error_at }
 
@@ -61,16 +57,7 @@ async function recordError(provider: string, state: LLMState, priority: string[]
   }
   lastErrorAt[provider] = new Date().toISOString()
 
-  let currentProvider = state.current_provider
-  if (errorCounts[provider] >= ERROR_THRESHOLD) {
-    const currentIdx = priority.indexOf(provider)
-    if (currentIdx < priority.length - 1) {
-      currentProvider = priority[currentIdx + 1]
-      console.log(`LLM 전환: ${provider} → ${currentProvider}`)
-    }
-  }
-
-  await updateLLMState({ current_provider: currentProvider, error_counts: errorCounts, last_error_at: lastErrorAt })
+  await updateLLMState({ error_counts: errorCounts, last_error_at: lastErrorAt })
 }
 
 async function callProvider(provider: string, messages: { role: string; content: string }[], systemPrompt: string): Promise<string> {
@@ -94,20 +81,6 @@ async function callProvider(provider: string, messages: { role: string; content:
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
       body: JSON.stringify({
         model: 'llama-3.3-70b-versatile',
-        messages: [{ role: 'system', content: systemPrompt }, ...messages],
-      }),
-    })
-    const data = await res.json()
-    if (!data.choices?.[0]?.message?.content) throw new Error(JSON.stringify(data))
-    return data.choices[0].message.content
-  }
-
-  if (provider === 'gpt-oss') {
-    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
-      body: JSON.stringify({
-        model: 'openai/gpt-oss-120b',
         messages: [{ role: 'system', content: systemPrompt }, ...messages],
       }),
     })
@@ -193,32 +166,56 @@ async function callProvider(provider: string, messages: { role: string; content:
     return data.content[0].text
   }
 
+  if (provider === 'gpt-oss') {
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
+      body: JSON.stringify({
+        model: 'openai/gpt-oss-120b',
+        messages: [{ role: 'system', content: systemPrompt }, ...messages],
+      }),
+    })
+    const data = await res.json()
+    if (!data.choices?.[0]?.message?.content) throw new Error(JSON.stringify(data))
+    return data.choices[0].message.content
+  }
+
   throw new Error(`Unknown provider: ${provider}`)
 }
-async function callLLMWithPriority(messages: { role: string; content: string }[], systemPrompt: string, priority: string[], selectedProvider?: string): Promise<CallLLMResult> {
+
+// ✅ selectedProvider가 없으면 에러 던짐
+async function callLLMDirect(messages: { role: string; content: string }[], systemPrompt: string, selectedProvider: string): Promise<CallLLMResult> {
+  if (!selectedProvider) {
+    throw new Error('LLM provider를 선택해주세요.')
+  }
+
+  try {
+    console.log(`[LLM] 호출: ${selectedProvider}`)
+    const result = await callProvider(selectedProvider, messages, systemPrompt)
+    await updateLLMState({ current_provider: selectedProvider })
+    return { content: result, provider: selectedProvider }
+  } catch (err: unknown) {
+    console.log(`[LLM] ${selectedProvider} 호출 실패:`, err)
+    const state = await getLLMState()
+    await recordError(selectedProvider, state)
+    throw err
+  }
+}
+
+async function callLLMWithPriority(messages: { role: string; content: string }[], systemPrompt: string, priority: string[]): Promise<CallLLMResult> {
   const state = await getLLMState()
 
   const invalidProviders = Object.entries(state.error_counts)
     .filter(([, count]) => count >= ERROR_THRESHOLD)
     .map(([p]) => p)
 
-  // selectedProvider가 명시적으로 선택되었으면, 그것을 첫 번째로 시도
-  let orderedProviders: string[]
-  if (selectedProvider && !invalidProviders.includes(selectedProvider) && priority.includes(selectedProvider)) {
-    // selectedProvider를 맨 앞에 배치하고, 나머지는 원래 우선순위
-    orderedProviders = [
-      selectedProvider,
-      ...priority.filter(p => p !== selectedProvider)
-    ]
-  } else {
-    // 선택되지 않았으면 current_provider 기준으로 재정렬
-    let provider = state.current_provider
-    if (!provider || !priority.includes(provider) || invalidProviders.includes(provider)) {
-      provider = priority.find((p) => !invalidProviders.includes(p)) || priority[0]
-    }
-    const startIdx = priority.indexOf(provider)
-    orderedProviders = startIdx >= 0 ? [...priority.slice(startIdx), ...priority.slice(0, startIdx)] : priority
+  let provider = state.current_provider
+  if (!provider || !priority.includes(provider) || invalidProviders.includes(provider)) {
+    provider = priority.find((p) => !invalidProviders.includes(p)) || priority[0]
   }
+
+  const startIdx = priority.indexOf(provider)
+  const orderedProviders = startIdx >= 0 ? [...priority.slice(startIdx), ...priority.slice(0, startIdx)] : priority
 
   for (const p of orderedProviders) {
     if (invalidProviders.includes(p)) {
@@ -229,16 +226,12 @@ async function callLLMWithPriority(messages: { role: string; content: string }[]
     try {
       console.log(`[LLM] 호출: ${p}`)
       const result = await callProvider(p, messages, systemPrompt)
-      // ✅ 성공 시에도 current_provider 업데이트
       await updateLLMState({ current_provider: p })
       return { content: result, provider: p }
     } catch (err: unknown) {
-      const status = (err as { status?: number })?.status
       console.log(`[LLM] ${p} 호출 실패:`, err)
-      await recordError(p, state, priority)
-      if (status === 429 || status === 503) {
-        continue
-      }
+      const state = await getLLMState()
+      await recordError(p, state)
       continue
     }
   }
@@ -246,22 +239,25 @@ async function callLLMWithPriority(messages: { role: string; content: string }[]
   throw new Error('모든 LLM 호출 실패')
 }
 
-export async function callEnglishLLM(messages: { role: string; content: string }[], systemPrompt: string): Promise<CallLLMResult> {
-  return callLLMWithPriority(messages, systemPrompt, ENGLISH_LLM_PRIORITY)
+export async function callEnglishLLM(messages: { role: string; content: string }[], systemPrompt: string, selectedProvider: string): Promise<CallLLMResult> {
+  return callLLMDirect(messages, systemPrompt, selectedProvider)
 }
 
 export async function callEnglishLLMWithProvider(messages: { role: string; content: string }[], systemPrompt: string, selectedProvider?: string): Promise<CallLLMResult> {
-  return callLLMWithPriority(messages, systemPrompt, ENGLISH_LLM_PRIORITY, selectedProvider)
+  return callLLMDirect(messages, systemPrompt, selectedProvider || '')
 }
 
 export async function callAssistantLLM(messages: { role: string; content: string }[], systemPrompt: string): Promise<CallLLMResult> {
-  return callLLMWithPriority(messages, systemPrompt, ASSISTANT_LLM_PRIORITY)
+  return callLLMWithPriority(messages, systemPrompt, ALL_PROVIDERS)
 }
 
 export async function callAssistantLLMWithProvider(messages: { role: string; content: string }[], systemPrompt: string, selectedProvider?: string): Promise<CallLLMResult> {
-  return callLLMWithPriority(messages, systemPrompt, ASSISTANT_LLM_PRIORITY, selectedProvider)
+  if (selectedProvider) {
+    return callLLMDirect(messages, systemPrompt, selectedProvider)
+  }
+  return callLLMWithPriority(messages, systemPrompt, ALL_PROVIDERS)
 }
 
-export async function callStockLLM(messages: { role: string; content: string }[], systemPrompt: string): Promise<CallLLMResult> {
-  return callLLMWithPriority(messages, systemPrompt, STOCK_LLM_PRIORITY)
+export async function callStockLLM(messages: { role: string; content: string }[], systemPrompt: string, selectedProvider: string): Promise<CallLLMResult> {
+  return callLLMDirect(messages, systemPrompt, selectedProvider)
 }
