@@ -36,6 +36,7 @@ export default function EnglishPage() {
       greeting={greeting}
       onSessionSaved={loadState}
       processContent={processContent}
+      showLanguageSelector={true}
       extraHeader={
         state?.weak_points && state.weak_points.length > 0 ? (
           <div className="hidden sm:flex items-center gap-2 text-xs text-[#555]">

@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
+import { speakText, type TTSLanguage, getLanguageLabel, getAllLanguages } from '@/lib/speech'
 
 export type Message = {
   role: 'user' | 'assistant'
@@ -17,6 +18,7 @@ type Props = {
   extraRequestData?: Record<string, unknown>
   onApiResponse?: (data: any) => void
   processContent?: (content: string) => string
+  showLanguageSelector?: boolean
 }
 
 export default function ChatWindow({
@@ -29,11 +31,14 @@ export default function ChatWindow({
   extraRequestData,
   onApiResponse,
   processContent,
+  showLanguageSelector = false,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [sessionActive, setSessionActive] = useState(false)
+  const [selectedLang, setSelectedLang] = useState<TTSLanguage>('en-US')
+  const [speaking, setSpeaking] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -44,6 +49,17 @@ export default function ChatWindow({
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  async function handleSpeak(text: string) {
+    setSpeaking(true)
+    try {
+      await speakText(text, selectedLang)
+    } catch (e) {
+      console.error('Speech error:', e)
+    } finally {
+      setSpeaking(false)
+    }
+  }
 
   async function sendMessage() {
     if (!input.trim() || loading) return
@@ -138,13 +154,42 @@ export default function ChatWindow({
         </div>
       </header>
 
+      {showLanguageSelector && (
+        <div className="border-b border-[#222] px-6 py-3 bg-[#0a0a0a]">
+          <label className="text-xs text-[#555] mr-3">발음 억양:</label>
+          <select
+            value={selectedLang}
+            onChange={(e) => setSelectedLang(e.target.value as TTSLanguage)}
+            className="bg-[#1a1a1a] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-[#e8ff47]"
+          >
+            {getAllLanguages().map((lang) => (
+              <option key={lang} value={lang}>
+                {getLanguageLabel(lang)}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
       <div className="flex-1 overflow-y-auto px-4 py-6 space-y-4 max-w-2xl mx-auto w-full">
         {messages.map((msg, i) => (
           <div key={i} className={`px-4 py-3 rounded-sm text-sm leading-relaxed whitespace-pre-wrap ${msg.role === 'user' ? 'msg-user' : 'msg-assistant'}`}>
             <span className={`text-xs font-medium mr-2 ${msg.role === 'user' ? 'text-[#e8ff47]' : 'text-[#555]'}`}>
               {msg.role === 'user' ? 'you' : 'ai'}
             </span>
-            {msg.content}
+            <div className="inline-block">
+              {msg.content}
+              {msg.role === 'assistant' && showLanguageSelector && (
+                <button
+                  onClick={() => handleSpeak(msg.content.replace(/\[.*?\]\s/, ''))}
+                  disabled={speaking}
+                  className="ml-2 text-[#e8ff47] hover:text-white transition-colors disabled:opacity-40 text-xs"
+                  title="음성으로 읽어주기"
+                >
+                  🔊
+                </button>
+              )}
+            </div>
           </div>
         ))}
         {loading && (
