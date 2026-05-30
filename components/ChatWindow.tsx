@@ -22,6 +22,23 @@ type Props = {
   showLanguageSelector?: boolean
 }
 
+// 음성 속도 선택지: 0.8 ~ 1.4, 0.05 단위
+const SPEECH_RATES = [
+  { label: '0.80x', value: 0.8 },
+  { label: '0.85x', value: 0.85 },
+  { label: '0.90x', value: 0.9 },
+  { label: '0.95x', value: 0.95 },
+  { label: '1.00x', value: 1.0 },
+  { label: '1.05x', value: 1.05 },
+  { label: '1.10x', value: 1.1 },
+  { label: '1.15x', value: 1.15 },
+  { label: '1.20x', value: 1.2 },
+  { label: '1.25x', value: 1.25 },
+  { label: '1.30x', value: 1.3 },
+  { label: '1.35x', value: 1.35 },
+  { label: '1.40x', value: 1.4 },
+]
+
 export default function ChatWindow({
   title,
   subtitle,
@@ -39,6 +56,7 @@ export default function ChatWindow({
   const [loading, setLoading] = useState(false)
   const [sessionActive, setSessionActive] = useState(false)
   const [selectedLang, setSelectedLang] = useState<TTSLanguage>('en-US')
+  const [selectedRate, setSelectedRate] = useState(1.1)
   const [speaking, setSpeaking] = useState(false)
   const [showUndoButton, setShowUndoButton] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -55,7 +73,7 @@ export default function ChatWindow({
   async function handleSpeak(text: string) {
     setSpeaking(true)
     try {
-      await speakText(text, selectedLang)
+      await speakText(text, selectedLang, selectedRate)
     } catch (e) {
       console.error('Speech error:', e)
     } finally {
@@ -203,18 +221,36 @@ export default function ChatWindow({
 
       {showLanguageSelector && (
         <div className="border-b border-[#222] px-6 py-3 bg-[#0a0a0a]">
-          <label className="text-xs text-[#555] mr-3">발음 억양:</label>
-          <select
-            value={selectedLang}
-            onChange={(e) => setSelectedLang(e.target.value as TTSLanguage)}
-            className="bg-[#1a1a1a] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-[#e8ff47]"
-          >
-            {getAllLanguages().map((lang) => (
-              <option key={lang} value={lang}>
-                {getLanguageLabel(lang)}
-              </option>
-            ))}
-          </select>
+          <div className="flex gap-4 items-center">
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-[#555]">발음 억양:</label>
+              <select
+                value={selectedLang}
+                onChange={(e) => setSelectedLang(e.target.value as TTSLanguage)}
+                className="bg-[#1a1a1a] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-[#e8ff47]"
+              >
+                {getAllLanguages().map((lang) => (
+                  <option key={lang} value={lang}>
+                    {getLanguageLabel(lang)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-[#555]">음성 속도:</label>
+              <select
+                value={selectedRate}
+                onChange={(e) => setSelectedRate(parseFloat(e.target.value))}
+                className="bg-[#1a1a1a] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-[#e8ff47]"
+              >
+                {SPEECH_RATES.map((rate) => (
+                  <option key={rate.value} value={rate.value}>
+                    {rate.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
         </div>
       )}
 

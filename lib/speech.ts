@@ -30,7 +30,7 @@ function getActualLang(lang: TTSLanguage): string {
   return lang
 }
 
-export async function speakText(text: string, lang: TTSLanguage = 'en-US'): Promise<void> {
+export async function speakText(text: string, lang: TTSLanguage = 'en-US', rate: number = 1.1): Promise<void> {
   return new Promise((resolve, reject) => {
     if (!('speechSynthesis' in window)) {
       reject(new Error('Speech Synthesis not supported'))
@@ -40,7 +40,7 @@ export async function speakText(text: string, lang: TTSLanguage = 'en-US'): Prom
     const actualLang = getActualLang(lang)
     const utterance = new SpeechSynthesisUtterance(text)
     utterance.lang = actualLang
-    utterance.rate = 0.9
+    utterance.rate = rate
     utterance.pitch = 1
     utterance.volume = 1
 
