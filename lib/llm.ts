@@ -195,23 +195,30 @@ async function callProvider(provider: string, messages: { role: string; content:
 
   throw new Error(`Unknown provider: ${provider}`)
 }
-
 async function callLLMWithPriority(messages: { role: string; content: string }[], systemPrompt: string, priority: string[], selectedProvider?: string): Promise<CallLLMResult> {
   const state = await getLLMState()
-  let provider = state.current_provider
 
   const invalidProviders = Object.entries(state.error_counts)
     .filter(([, count]) => count >= ERROR_THRESHOLD)
     .map(([p]) => p)
 
+  // selectedProvider가 명시적으로 선택되었으면, 그것을 첫 번째로 시도
+  let orderedProviders: string[]
   if (selectedProvider && !invalidProviders.includes(selectedProvider) && priority.includes(selectedProvider)) {
-    provider = selectedProvider
-  } else if (!provider || !priority.includes(provider) || invalidProviders.includes(provider)) {
-    provider = priority.find((p) => !invalidProviders.includes(p)) || priority[0]
+    // selectedProvider를 맨 앞에 배치하고, 나머지는 원래 우선순위
+    orderedProviders = [
+      selectedProvider,
+      ...priority.filter(p => p !== selectedProvider)
+    ]
+  } else {
+    // 선택되지 않았으면 current_provider 기준으로 재정렬
+    let provider = state.current_provider
+    if (!provider || !priority.includes(provider) || invalidProviders.includes(provider)) {
+      provider = priority.find((p) => !invalidProviders.includes(p)) || priority[0]
+    }
+    const startIdx = priority.indexOf(provider)
+    orderedProviders = startIdx >= 0 ? [...priority.slice(startIdx), ...priority.slice(0, startIdx)] : priority
   }
-
-  const startIdx = priority.indexOf(provider)
-  const orderedProviders = startIdx >= 0 ? [...priority.slice(startIdx), ...priority.slice(0, startIdx)] : priority
 
   for (const p of orderedProviders) {
     if (invalidProviders.includes(p)) {
@@ -222,6 +229,8 @@ async function callLLMWithPriority(messages: { role: string; content: string }[]
     try {
       console.log(`[LLM] 호출: ${p}`)
       const result = await callProvider(p, messages, systemPrompt)
+      // ✅ 성공 시에도 current_provider 업데이트
+      await updateLLMState({ current_provider: p })
       return { content: result, provider: p }
     } catch (err: unknown) {
       const status = (err as { status?: number })?.status
