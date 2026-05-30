@@ -1,9 +1,9 @@
 import { supabase } from './supabase'
 
 // ↓ 기능별 LLM 우선순위 설정
-export const ENGLISH_LLM_PRIORITY = ['gemini', 'groq', 'openai', 'deepseek', 'kimi', 'glm', 'grok', 'claude']
-export const ASSISTANT_LLM_PRIORITY = ['groq', 'gemini', 'openai', 'deepseek', 'kimi', 'glm', 'grok', 'claude']
-export const STOCK_LLM_PRIORITY = ['gemini', 'groq', 'openai', 'deepseek', 'kimi', 'glm', 'grok', 'claude']
+export const ENGLISH_LLM_PRIORITY = ['gemini', 'groq', 'gpt-oss', 'openai', 'deepseek', 'kimi', 'glm', 'grok', 'claude']
+export const ASSISTANT_LLM_PRIORITY = ['groq', 'gemini', 'gpt-oss', 'openai', 'deepseek', 'kimi', 'glm', 'grok', 'claude']
+export const STOCK_LLM_PRIORITY = ['gemini', 'groq', 'gpt-oss', 'openai', 'deepseek', 'kimi', 'glm', 'grok', 'claude']
 
 // ↓ 리셋 방식 설정: 'midnight' | 'hours'
 const RESET_MODE: 'midnight' | 'hours' = 'midnight'
@@ -94,6 +94,20 @@ async function callProvider(provider: string, messages: { role: string; content:
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
       body: JSON.stringify({
         model: 'llama-3.3-70b-versatile',
+        messages: [{ role: 'system', content: systemPrompt }, ...messages],
+      }),
+    })
+    const data = await res.json()
+    if (!data.choices?.[0]?.message?.content) throw new Error(JSON.stringify(data))
+    return data.choices[0].message.content
+  }
+
+  if (provider === 'gpt-oss') {
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
+      body: JSON.stringify({
+        model: 'openai/gpt-oss-120b',
         messages: [{ role: 'system', content: systemPrompt }, ...messages],
       }),
     })

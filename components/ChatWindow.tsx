@@ -24,19 +24,24 @@ type Props = {
 
 // 음성 속도 선택지: 0.8 ~ 1.4, 0.05 단위
 const SPEECH_RATES = [
-  { label: '0.80x', value: 0.8 },
-  { label: '0.85x', value: 0.85 },
-  { label: '0.90x', value: 0.9 },
-  { label: '0.95x', value: 0.95 },
-  { label: '1.00x', value: 1.0 },
-  { label: '1.05x', value: 1.05 },
-  { label: '1.10x', value: 1.1 },
-  { label: '1.15x', value: 1.15 },
-  { label: '1.20x', value: 1.2 },
-  { label: '1.25x', value: 1.25 },
-  { label: '1.30x', value: 1.3 },
-  { label: '1.35x', value: 1.35 },
-  { label: '1.40x', value: 1.4 },
+  { label: '0.8x', value: 0.8 },
+  { label: '0.9x', value: 0.9 },
+  { label: '1.0x', value: 1.0 },
+  { label: '1.1x', value: 1.1 },
+  { label: '1.2x', value: 1.2 },
+  { label: '1.3x', value: 1.3 },
+  { label: '1.4x', value: 1.4 },
+  { label: '1.5x', value: 1.5 },
+  { label: '1.6x', value: 1.6 },
+  { label: '1.7x', value: 1.7 },
+  { label: '1.8x', value: 1.8 },
+  { label: '1.9x', value: 1.9 },
+  { label: '2.0x', value: 2.0 },
+  { label: '2.1x', value: 2.1 },
+  { label: '2.2x', value: 2.2 },
+  { label: '2.3x', value: 2.3 },
+  { label: '2.4x', value: 2.4 },
+  { label: '2.5x', value: 2.5 },
 ]
 
 export default function ChatWindow({
