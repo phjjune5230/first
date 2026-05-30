@@ -243,8 +243,15 @@ export async function callEnglishLLM(messages: { role: string; content: string }
   return callLLMDirect(messages, systemPrompt, selectedProvider)
 }
 
-export async function callEnglishLLMWithProvider(messages: { role: string; content: string }[], systemPrompt: string, selectedProvider?: string): Promise<CallLLMResult> {
-  return callLLMDirect(messages, systemPrompt, selectedProvider || '')
+export async function callEnglishLLMWithProvider(
+  messages: { role: string; content: string }[], 
+  systemPrompt: string, 
+  selectedProvider?: string
+): Promise<CallLLMResult> {
+  if (!selectedProvider) {
+    throw new Error('LLM provider를 선택해주세요.')
+  }
+  return callLLMDirect(messages, systemPrompt, selectedProvider)
 }
 
 export async function callAssistantLLM(messages: { role: string; content: string }[], systemPrompt: string): Promise<CallLLMResult> {
