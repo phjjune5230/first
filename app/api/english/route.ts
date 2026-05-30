@@ -70,8 +70,15 @@ ${messages.map((m: { role: string; content: string }) => `${m.role}: ${m.content
     disabledProviders, 
     examples: parsedResult.examples 
   })
+} catch (err) {
+  console.error('LLM call error:', err)
+  return NextResponse.json({ 
+    ok: false, 
+    error: String(err),
+    availableProviders: ALL_PROVIDERS
+  }, { status: 500 })
 }
-
+ 
 function parseExampleResponse(raw: string) {
   const cleaned = raw.replace(/```json|```/g, '').trim()
   try {
