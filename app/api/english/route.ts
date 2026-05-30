@@ -9,9 +9,10 @@ export async function POST(req: NextRequest) {
   const state = await getState()
 
   if (action === 'save_session') {
-    const validProvider = validateProvider(provider)
-    const result = await callEnglishLLMWithProvider(
-      [{ role: 'user', content: `다음 대화를 분석해서 JSON만 반환해. 다른 텍스트 없이 JSON만.
+    try {
+      const validProvider = validateProvider(provider)
+      const result = await callEnglishLLMWithProvider(
+        [{ role: 'user', content: `다음 대화를 분석해서 JSON만 반환해. 다른 텍스트 없이 JSON만.
 {
   "summary": "오늘 공부한 내용 한 줄 요약",
   "notes": "특이사항, 헷갈렸던 것",
@@ -19,17 +20,17 @@ export async function POST(req: NextRequest) {
 }
 대화:
 ${messages.map((m: { role: string; content: string }) => `${m.role}: ${m.content}`).join('\n')}` }],
-      '',
-      validProvider
-    )
-    const cleaned = result.content.replace(/```json|```/g, '').trim()
-    try {
+        '',
+        validProvider
+      )
+      const cleaned = result.content.replace(/```json|```/g, '').trim()
       const parsed = JSON.parse(cleaned)
       const log: DailyLog = { date: new Date().toISOString().split('T')[0], ...parsed }
       await appendDailyLog(log)
       if (state) await updateState({ current_day: state.current_day + 1 })
       return NextResponse.json({ ok: true, log })
-    } catch {
+    } catch (err) {
+      console.error('Save session error:', err)
       return NextResponse.json({ ok: false, error: '요약 파싱 실패' })
     }
   }
@@ -42,43 +43,45 @@ ${messages.map((m: { role: string; content: string }) => `${m.role}: ${m.content
     return NextResponse.json({ ok: false, error: '첫 날이라 되돌릴 수 없어요.' })
   }
 
-  const validProvider = validateProvider(provider)
-  const systemPrompt = buildSystemPrompt(state)
-  const result = await callEnglishLLMWithProvider(messages, systemPrompt, validProvider)
-  const { data } = await supabase.from('llm_state').select('error_counts').eq('id', 1).single()
-  const disabledProviders = Object.entries(data?.error_counts || {})
-    .filter(([, count]) => typeof count === 'number' && count >= 3)
-    .map(([p]) => p)
+  try {
+    const validProvider = validateProvider(provider)
+    const systemPrompt = buildSystemPrompt(state)
+    const result = await callEnglishLLMWithProvider(messages, systemPrompt, validProvider)
+    const { data } = await supabase.from('llm_state').select('error_counts').eq('id', 1).single()
+    const disabledProviders = Object.entries(data?.error_counts || {})
+      .filter(([, count]) => typeof count === 'number' && count >= 3)
+      .map(([p]) => p)
 
-  const parsedResult = parseExampleResponse(result.content)
-  const content = parsedResult.text ? `[${result.provider}] ${parsedResult.text}` : `[${result.provider}] ${result.content}`
+    const parsedResult = parseExampleResponse(result.content)
+    const content = parsedResult.text ? `[${result.provider}] ${parsedResult.text}` : `[${result.provider}] ${result.content}`
 
-  if (result.content.includes('[CURRICULUM_READY]')) {
-    const jsonMatch = result.content.match(/\[CURRICULUM_READY\]\s*({[\s\S]*})/)
-    if (jsonMatch) {
-      try {
-        const curriculum = JSON.parse(jsonMatch[1])
-        await updateState({ curriculum })
-      } catch { console.error('curriculum parse error') }
+    if (result.content.includes('[CURRICULUM_READY]')) {
+      const jsonMatch = result.content.match(/\[CURRICULUM_READY\]\s*({[\s\S]*})/)
+      if (jsonMatch) {
+        try {
+          const curriculum = JSON.parse(jsonMatch[1])
+          await updateState({ curriculum })
+        } catch { console.error('curriculum parse error') }
+      }
     }
-  }
 
-  return NextResponse.json({ 
-    content, 
-    provider: result.provider, 
-    availableProviders: ALL_PROVIDERS,
-    disabledProviders, 
-    examples: parsedResult.examples 
-  })
-} catch (err) {
-  console.error('LLM call error:', err)
-  return NextResponse.json({ 
-    ok: false, 
-    error: String(err),
-    availableProviders: ALL_PROVIDERS
-  }, { status: 500 })
+    return NextResponse.json({ 
+      content, 
+      provider: result.provider, 
+      availableProviders: ALL_PROVIDERS,
+      disabledProviders, 
+      examples: parsedResult.examples 
+    })
+  } catch (err) {
+    console.error('LLM call error:', err)
+    return NextResponse.json({ 
+      ok: false, 
+      error: String(err),
+      availableProviders: ALL_PROVIDERS
+    }, { status: 500 })
+  }
 }
- 
+
 function parseExampleResponse(raw: string) {
   const cleaned = raw.replace(/```json|```/g, '').trim()
   try {
