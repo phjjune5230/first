@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import ChatWindow from '@/components/ChatWindow'
 import { getState, updateState, StudyState } from '@/lib/supabase'
+import { ENGLISH_LLM_PRIORITY } from '@/lib/llm'
 
 export default function EnglishPage() {
   const [state, setState] = useState<StudyState | null>(null)
@@ -10,6 +11,8 @@ export default function EnglishPage() {
   const [editMode, setEditMode] = useState(false)
   const [editWeek, setEditWeek] = useState(1)
   const [editDay, setEditDay] = useState(1)
+  const [selectedProvider, setSelectedProvider] = useState('')
+  const [disabledProviders, setDisabledProviders] = useState<string[]>([])
 
   useEffect(() => {
     loadState()
@@ -37,6 +40,19 @@ export default function EnglishPage() {
   }
 
   function processContent(content: string) {
+    const cleaned = content.replace('```json', '').replace('```', '').trim()
+    try {
+      const parsed = JSON.parse(cleaned)
+      if (parsed && typeof parsed === 'object' && Array.isArray(parsed.examples)) {
+        const text = typeof parsed.text === 'string' ? parsed.text.trim() : ''
+        const exampleLines = parsed.examples
+          .map((item: any) => `${item.speaker || '예시'}: ${item.sentence || item.text || ''}`)
+          .filter(Boolean)
+        return [text, ...exampleLines].filter(Boolean).join('\n')
+      }
+    } catch {
+      // JSON이 아니라면 기존 텍스트 처리 유지
+    }
     return content.replace('[CURRICULUM_READY]', '').replace(/\{[\s\S]*\}/, '').trim()
   }
 
@@ -53,23 +69,52 @@ export default function EnglishPage() {
         processContent={processContent}
         showLanguageSelector={true}
         extraHeader={
-          <div className="flex items-center gap-3">
-            {state?.weak_points && state.weak_points.length > 0 && (
-              <div className="hidden sm:flex items-center gap-2 text-xs text-[#555]">
-                <span className="text-[#e8ff47]">약점</span>
-                {state.weak_points.slice(-2).map((w, i) => (
-                  <span key={i} className="bg-[#1a1a1a] px-2 py-0.5 rounded">{w}</span>
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-3">
+              {state?.weak_points && state.weak_points.length > 0 && (
+                <div className="hidden sm:flex items-center gap-2 text-xs text-[#555]">
+                  <span className="text-[#e8ff47]">약점</span>
+                  {state.weak_points.slice(-2).map((w, i) => (
+                    <span key={i} className="bg-[#1a1a1a] px-2 py-0.5 rounded">{w}</span>
+                  ))}
+                </div>
+              )}
+              <button
+                onClick={() => setEditMode(!editMode)}
+                className="text-xs border border-[#333] px-3 py-1.5 rounded hover:border-[#e8ff47] hover:text-[#e8ff47] transition-colors"
+              >
+                {editMode ? '닫기' : '일정수정'}
+              </button>
+            </div>
+            <div className="flex items-center gap-2 text-xs text-[#888]">
+              <span>LLM:</span>
+              <select
+                value={selectedProvider}
+                onChange={(e) => setSelectedProvider(e.target.value)}
+                className="bg-[#111] border border-[#333] text-white rounded px-2 py-1 outline-none"
+              >
+                <option value="">자동 선택</option>
+                {ENGLISH_LLM_PRIORITY.map((provider) => (
+                  <option key={provider} value={provider} disabled={disabledProviders.includes(provider)}>
+                    {provider}{disabledProviders.includes(provider) ? ' (비활성)' : ''}
+                  </option>
                 ))}
-              </div>
+              </select>
+            </div>
+            {disabledProviders.length > 0 && (
+              <p className="text-[10px] text-[#555]">비활성 LLM: {disabledProviders.join(', ')}</p>
             )}
-            <button
-              onClick={() => setEditMode(!editMode)}
-              className="text-xs border border-[#333] px-3 py-1.5 rounded hover:border-[#e8ff47] hover:text-[#e8ff47] transition-colors"
-            >
-              {editMode ? '닫기' : '일정수정'}
-            </button>
           </div>
         }
+        extraRequestData={selectedProvider ? { provider: selectedProvider } : undefined}
+        onApiResponse={(data) => {
+          if (Array.isArray(data?.disabledProviders)) {
+            setDisabledProviders(data.disabledProviders)
+            if (data.disabledProviders.includes(selectedProvider)) {
+              setSelectedProvider('')
+            }
+          }
+        }}
       />
 
       {editMode && (

@@ -1,14 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getState, appendDailyLog, updateState, DailyLog } from '@/lib/supabase'
-import { callEnglishLLM } from '@/lib/llm'
+import { getState, appendDailyLog, updateState, DailyLog, supabase } from '@/lib/supabase'
+import { callEnglishLLMWithProvider } from '@/lib/llm'
 
 export async function POST(req: NextRequest) {
   const body = await req.json()
-  const { messages, action } = body
+  const { messages, action, provider } = body
   const state = await getState()
 
   if (action === 'save_session') {
-    const result = await callEnglishLLM(
+    const result = await callEnglishLLMWithProvider(
       [{ role: 'user', content: `다음 대화를 분석해서 JSON만 반환해. 다른 텍스트 없이 JSON만.
 {
   "summary": "오늘 공부한 내용 한 줄 요약",
@@ -17,7 +17,8 @@ export async function POST(req: NextRequest) {
 }
 대화:
 ${messages.map((m: { role: string; content: string }) => `${m.role}: ${m.content}`).join('\n')}` }],
-      ''
+      '',
+      provider
     )
     const cleaned = result.content.replace(/```json|```/g, '').trim()
     try {
@@ -40,7 +41,11 @@ ${messages.map((m: { role: string; content: string }) => `${m.role}: ${m.content
   }
 
   const systemPrompt = buildSystemPrompt(state)
-  const result = await callEnglishLLM(messages, systemPrompt)
+  const result = await callEnglishLLMWithProvider(messages, systemPrompt, provider)
+  const { data } = await supabase.from('llm_state').select('error_counts').eq('id', 1).single()
+  const disabledProviders = Object.entries(data?.error_counts || {})
+    .filter(([, count]) => typeof count === 'number' && count >= 3)
+    .map(([p]) => p)
   const content = `[${result.provider}] ${result.content}`
 
   if (result.content.includes('[CURRICULUM_READY]')) {
@@ -53,7 +58,7 @@ ${messages.map((m: { role: string; content: string }) => `${m.role}: ${m.content
     }
   }
 
-  return NextResponse.json({ content })
+  return NextResponse.json({ content, provider: result.provider, disabledProviders })
 }
 
 function buildSystemPrompt(state: Awaited<ReturnType<typeof getState>>) {

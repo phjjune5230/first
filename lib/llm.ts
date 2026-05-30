@@ -227,6 +227,10 @@ export async function callEnglishLLM(messages: { role: string; content: string }
   return callLLMWithPriority(messages, systemPrompt, ENGLISH_LLM_PRIORITY)
 }
 
+export async function callEnglishLLMWithProvider(messages: { role: string; content: string }[], systemPrompt: string, selectedProvider?: string): Promise<CallLLMResult> {
+  return callLLMWithPriority(messages, systemPrompt, ENGLISH_LLM_PRIORITY, selectedProvider)
+}
+
 export async function callAssistantLLM(messages: { role: string; content: string }[], systemPrompt: string): Promise<CallLLMResult> {
   return callLLMWithPriority(messages, systemPrompt, ASSISTANT_LLM_PRIORITY)
 }
