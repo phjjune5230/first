@@ -19,6 +19,7 @@ export type StudyState = {
   id: string
   goal: string | null                      // 최종 목표
   plan: string | null                      // 목표 달성 방법/과정 (매 세션 업데이트)
+  curriculum: string | null               // 커리큘럼 (추가)
   current_week: number
   current_day: number
   daily_studies: DailyStudy[]             // 날짜별 학습 내용
