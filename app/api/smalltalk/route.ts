@@ -91,11 +91,14 @@ ${messages.map((m: { role: string; content: string }) => `${m.role === 'user' ? 
 
     const result = await handleChat(messages, systemPrompt, validProvider, getDefaultOptions('smalltalk'))
 
+    const firstUserMessage = messages.find((m: { role: string }) => m.role === 'user')?.content
+
     return NextResponse.json({
       content: result.content,
       provider: result.provider,
       availableProviders: ALL_PROVIDERS,
       disabledProviders: result.disabledProviders,
+      firstUserMessage: !body.conversationId ? firstUserMessage : undefined,
     })
   } catch (err) {
     console.error('LLM call error:', err)

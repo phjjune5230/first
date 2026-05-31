@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import ChatWindow from '@/components/ChatWindow'
 import { ALL_PROVIDERS } from '@/lib/llm'
 
@@ -23,9 +23,20 @@ export default function SmalltalkPage() {
   const [loading, setLoading] = useState(true)
   const [deletingId, setDeletingId] = useState<string | null>(null)
 
+  // conversationId를 ref로 관리 → 첫 메시지 후 동적 업데이트 가능
+  const requestDataRef = useRef<Record<string, unknown>>({
+    provider: selectedProvider,
+    conversationId: null,
+  })
+
   useEffect(() => {
     fetchConversations()
   }, [])
+
+  // provider 바뀔 때 ref도 업데이트
+  useEffect(() => {
+    requestDataRef.current = { ...requestDataRef.current, provider: selectedProvider }
+  }, [selectedProvider])
 
   async function fetchConversations() {
     setLoading(true)
@@ -41,14 +52,18 @@ export default function SmalltalkPage() {
   }
 
   // 새 대화 시작
-  async function startNewChat() {
+  function startNewChat() {
     setSelectedConv(null)
+    // ref 초기화 (conversationId null → 첫 메시지 후 생성)
+    requestDataRef.current = { provider: selectedProvider, conversationId: null }
     setView('chat')
   }
 
   // 이어하기
   function continueChat(conv: Conversation) {
     setSelectedConv(conv)
+    // 이어하기는 이미 conversationId 있음
+    requestDataRef.current = { provider: selectedProvider, conversationId: conv.id }
     setView('chat')
   }
 
@@ -69,7 +84,28 @@ export default function SmalltalkPage() {
     }
   }
 
-  // 목록으로 돌아오기 (세션 저장 후)
+  // API 응답 후 콜백: 새 대화일 때 conversationId 받아서 ref 업데이트
+  const handleApiResponse = useCallback(async (data: any) => {
+    if (requestDataRef.current.conversationId) return // 이미 있으면 skip
+
+    // 첫 메시지 응답 왔을 때 conversation 생성
+    if (data.firstUserMessage) {
+      const res = await fetch('/api/smalltalk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'create_conversation',
+          messages: [{ role: 'user', content: data.firstUserMessage }],
+          provider: selectedProvider,
+        }),
+      })
+      const result = await res.json()
+      if (result.conversation?.id) {
+        requestDataRef.current = { ...requestDataRef.current, conversationId: result.conversation.id }
+      }
+    }
+  }, [selectedProvider])
+
   function handleSessionSaved() {
     fetchConversations()
   }
@@ -79,7 +115,6 @@ export default function SmalltalkPage() {
     const now = new Date()
     const diffMs = now.getTime() - date.getTime()
     const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
-
     if (diffDays === 0) return '오늘'
     if (diffDays === 1) return '어제'
     if (diffDays < 7) return `${diffDays}일 전`
@@ -115,6 +150,8 @@ export default function SmalltalkPage() {
           greeting={greeting}
           initialMessages={initialMessages}
           onSessionSaved={handleSessionSaved}
+          onApiResponse={handleApiResponse}
+          extraRequestDataRef={requestDataRef}
           extraHeader={
             <div className="flex flex-col gap-2 text-xs text-[#888]">
               <div className="flex items-center gap-2">
@@ -131,12 +168,6 @@ export default function SmalltalkPage() {
               </div>
             </div>
           }
-          extraRequestData={{
-            provider: selectedProvider,
-            conversationId: selectedConv?.id || null,
-            // 새 대화면 첫 메시지 후 conversation 생성 필요
-            isNewConversation: !selectedConv,
-          }}
         />
       </div>
     )

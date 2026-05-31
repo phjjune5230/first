@@ -18,6 +18,7 @@ type Props = {
   onSessionSaved?: () => void
   extraHeader?: React.ReactNode
   extraRequestData?: Record<string, unknown>
+  extraRequestDataRef?: React.MutableRefObject<Record<string, unknown>>
   onApiResponse?: (data: any) => void
   processContent?: (content: string) => string
   showLanguageSelector?: boolean
@@ -49,6 +50,7 @@ export default function ChatWindow({
   onSessionSaved,
   extraHeader,
   extraRequestData,
+  extraRequestDataRef,
   onApiResponse,
   processContent,
   showLanguageSelector = false,
@@ -102,7 +104,7 @@ export default function ChatWindow({
       const res = await fetch(apiPath, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: newMessages.map(({ role, content }) => ({ role, content })), ...(extraRequestData ?? {}) }),
+        body: JSON.stringify({ messages: newMessages.map(({ role, content }) => ({ role, content })), ...(extraRequestDataRef?.current ?? extraRequestData ?? {}) }),
       })
       const data = await res.json()
       onApiResponse?.(data)
@@ -140,7 +142,7 @@ export default function ChatWindow({
       const res = await fetch(apiPath, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages, action: 'save_session', ...(extraRequestData ?? {}) }),
+        body: JSON.stringify({ messages, action: 'save_session', ...(extraRequestDataRef?.current ?? extraRequestData ?? {}) }),
       })
       const data = await res.json()
       if (data.ok) {
