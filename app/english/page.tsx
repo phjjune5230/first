@@ -25,9 +25,9 @@ export default function EnglishPage() {
       setEditDay(s.current_day)
     }
     setGreeting(
-      s?.curriculum
+      s?.goal
         ? `안녕하세요! ${s.current_week}주차 ${s.current_day}일 학습 시작할까요?`
-        : '안녕하세요! 영어 공부 비서예요. 커리큘럼부터 같이 만들어봐요!'
+        : '안녕하세요! 영어 공부 비서예요. 목표부터 같이 설정해봐요!'
     )
   }
 
@@ -52,7 +52,7 @@ export default function EnglishPage() {
     } catch {
       // JSON이 아니라면 기존 텍스트 처리 유지
     }
-    return content.replace('[CURRICULUM_READY]', '').replace(/\{[\s\S]*\}/, '').trim()
+    return content.replace('[SETUP_READY]', '').replace(/\{[\s\S]*\}/, '').trim()
   }
 
   if (!greeting) return null
@@ -61,7 +61,7 @@ export default function EnglishPage() {
     <>
       <ChatWindow
         title="영어 공부"
-        subtitle={state?.curriculum ? `${state.curriculum.goal} · ${state.current_week}주차 ${state.current_day}일` : undefined}
+        subtitle={state?.goal ? `${state.goal} · ${state.current_week}주차 ${state.current_day}일` : undefined}
         apiPath="/api/english"
         greeting={greeting}
         onSessionSaved={loadState}
