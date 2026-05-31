@@ -7,6 +7,7 @@ export type Message = {
   role: 'user' | 'assistant'
   content: string
   speaker?: string
+  speakerIndex?: number
 }
 
 type Props = {
@@ -80,10 +81,10 @@ export default function ChatWindow({
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  async function handleSpeak(text: string) {
+  async function handleSpeak(text: string, speakerIndex?: number) {
     setSpeaking(true)
     try {
-      await speakText(text, selectedLang, selectedRate)
+      await speakText(text, selectedLang, selectedRate, speakerIndex)
     } catch (e) {
       console.error('Speech error:', e)
     } finally {
@@ -116,11 +117,19 @@ export default function ChatWindow({
         if (content) {
           nextMessages.push({ role: 'assistant', content })
         }
+        // speaker 목록 추출 → A/B/C 인덱스 매핑 (남/여 교대 TTS용)
+        const speakerList: string[] = []
         data.examples.forEach((item: any) => {
           if (!item || typeof item !== 'object') return
-          const text = item.sentence ?? item.text ?? ''  // ← sentence 대신 text 변수명 사용
+          const text = item.sentence ?? item.text ?? ''
           if (!text) return
-          nextMessages.push({ role: 'assistant', content: text, speaker: item.speaker ?? 'Example' })  // ← speaker 필드 제거
+          const rawSpeaker = item.speaker ?? ''
+          if (rawSpeaker && !speakerList.includes(rawSpeaker)) {
+            speakerList.push(rawSpeaker)
+          }
+          const speakerIndex = rawSpeaker ? speakerList.indexOf(rawSpeaker) : undefined
+          const speakerLabel = speakerIndex !== undefined ? String.fromCharCode(65 + speakerIndex) : undefined
+          nextMessages.push({ role: 'assistant', content: text, speaker: speakerLabel, speakerIndex })
         })
       } else {
         nextMessages.push({ role: 'assistant', content })
@@ -268,13 +277,13 @@ export default function ChatWindow({
         {messages.map((msg, i) => (
           <div key={i} className={`px-4 py-3 rounded-sm text-sm leading-relaxed whitespace-pre-wrap ${msg.role === 'user' ? 'msg-user' : 'msg-assistant'}`}>
             <span className={`text-xs font-medium mr-2 ${msg.role === 'user' ? 'text-[#e8ff47]' : 'text-[#555]'}`}>
-              {msg.role === 'user' ? 'you' : msg.speaker ? msg.speaker : 'ai'}
+              {msg.role === 'user' ? 'you' : msg.speaker ?? 'ai'}
             </span>
             <div className="inline-block">
               {msg.content}
               {msg.role === 'assistant' && showLanguageSelector && (
                 <button
-                  onClick={() => handleSpeak(msg.content.replace(/\[.*?\]\s/, ''))}
+                  onClick={() => handleSpeak(msg.content.replace(/\[.*?\]\s/, ''), msg.speakerIndex)}
                   disabled={speaking}
                   className="ml-2 text-[#e8ff47] hover:text-white transition-colors disabled:opacity-40 text-xs"
                   title="음성으로 읽어주기"

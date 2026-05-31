@@ -152,9 +152,14 @@ ${learnedExpressions.length > 0 ? learnedExpressions.slice(-20).join(', ') : '�
 {
   "text": "설명, 피드백, 안내 텍스트",
   "examples": [
-    { "speaker": "Teacher", "sentence": "예문" },
-    { "speaker": "Student", "sentence": "예문" }
+    { "speaker": "John", "sentence": "예문" },
+    { "speaker": "Sarah", "sentence": "예문" }
   ]
 }
-예문이 없으면 examples는 빈 배열로.`
+예문이 없으면 examples는 빈 배열로.
+
+speaker 규칙:
+- 화자는 실제 인물명으로 (John, Sarah, Mike, Emma 등 상황에 맞게)
+- 같은 대화 내 speaker 이름은 일관되게 유지
+- 2인: 남자/여자, 3인: 남/여/남, 4인: 남/여/남/여 순서로`
 }

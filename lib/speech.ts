@@ -30,7 +30,38 @@ function getActualLang(lang: TTSLanguage): string {
   return lang
 }
 
-export async function speakText(text: string, lang: TTSLanguage = 'en-US', rate: number = 1.1): Promise<void> {
+// speaker 인덱스(0,1,2...) → 남/여 교대로 voice 반환
+// 0,2,4... → 남성, 1,3,5... → 여성
+function getVoiceForSpeakerIndex(index: number, lang: string): SpeechSynthesisVoice | null {
+  const voices = window.speechSynthesis.getVoices()
+  const isMale = index % 2 === 0
+
+  // 해당 언어 voice만 필터 (앞 2자리 언어코드 기준)
+  const langVoices = voices.filter(v => v.lang.startsWith(lang.split('-')[0]))
+  if (langVoices.length === 0) return null
+
+  // 이름 기반 성별 추측
+  const maleKeywords = ['male', 'man', 'david', 'mark', 'james', 'daniel', 'thomas', 'george', 'ryan', 'fred']
+  const femaleKeywords = ['female', 'woman', 'samantha', 'karen', 'victoria', 'kate', 'lisa', 'moira', 'fiona', 'tessa', 'zira']
+
+  const targeted = langVoices.filter(v => {
+    const name = v.name.toLowerCase()
+    return isMale
+      ? maleKeywords.some(k => name.includes(k))
+      : femaleKeywords.some(k => name.includes(k))
+  })
+
+  // 매칭되면 사용, 없으면 인덱스로 교대 폴백
+  if (targeted.length > 0) return targeted[0]
+  return langVoices[index % langVoices.length] ?? null
+}
+
+export async function speakText(
+  text: string,
+  lang: TTSLanguage = 'en-US',
+  rate: number = 1.1,
+  speakerIndex?: number  // 0=첫번째 화자, 1=두번째... undefined=단일 TTS
+): Promise<void> {
   return new Promise((resolve, reject) => {
     if (!('speechSynthesis' in window)) {
       reject(new Error('Speech Synthesis not supported'))
@@ -43,6 +74,12 @@ export async function speakText(text: string, lang: TTSLanguage = 'en-US', rate:
     utterance.rate = rate
     utterance.pitch = 1
     utterance.volume = 1
+
+    // speakerIndex 있으면 성별 voice 배정
+    if (speakerIndex !== undefined) {
+      const voice = getVoiceForSpeakerIndex(speakerIndex, actualLang)
+      if (voice) utterance.voice = voice
+    }
 
     utterance.onend = () => resolve()
     utterance.onerror = () => reject(new Error('Speech synthesis failed'))
