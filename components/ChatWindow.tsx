@@ -1,11 +1,12 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import { speakText, type TTSLanguage, getLanguageLabel, getAllLanguages } from '@/lib/speech'
+import { speakText, speakWithGroq, startListening, stopListening, type TTSLanguage, type TTSMode, getLanguageLabel, getAllLanguages } from '@/lib/speech'
 
 export type Message = {
   role: 'user' | 'assistant'
   content: string
+  type?: 'text' | 'example' | 'output_prompt'
   speaker?: string
   speakerIndex?: number
 }
@@ -25,7 +26,6 @@ type Props = {
   showLanguageSelector?: boolean
 }
 
-// 음성 속도 선택지: 0.8 ~ 2.5, 0.1 단위
 const SPEECH_RATES = [
   { label: '0.8x', value: 0.8 },
   { label: '0.9x', value: 0.9 },
@@ -37,14 +37,7 @@ const SPEECH_RATES = [
   { label: '1.5x', value: 1.5 },
   { label: '1.6x', value: 1.6 },
   { label: '1.7x', value: 1.7 },
-  { label: '1.8x', value: 1.8 },
-  { label: '1.9x', value: 1.9 },
-  { label: '2.0x', value: 2.0 },
-  { label: '2.1x', value: 2.1 },
-  { label: '2.2x', value: 2.2 },
-  { label: '2.3x', value: 2.3 },
-  { label: '2.4x', value: 2.4 },
-  { label: '2.5x', value: 2.5 },
+  { label: 'Groq', value: 'groq' },
 ]
 
 export default function ChatWindow({
@@ -66,14 +59,16 @@ export default function ChatWindow({
   const [loading, setLoading] = useState(false)
   const [sessionActive, setSessionActive] = useState(false)
   const [selectedLang, setSelectedLang] = useState<TTSLanguage>('en-US')
-  const [selectedRate, setSelectedRate] = useState(1.4)
+  const [selectedMode, setSelectedMode] = useState<TTSMode>(1.4)
   const [speaking, setSpeaking] = useState(false)
+  const [listening, setListening] = useState(false)
+  const [listeningForIndex, setListeningForIndex] = useState<number | null>(null)
+  const [useWhisper, setUseWhisper] = useState(true)
   const [showUndoButton, setShowUndoButton] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (initialMessages && initialMessages.length > 0) {
-      // 이어하기: 과거 메시지 복원 후 greeting 추가
       const restored = initialMessages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }))
       setMessages([...restored, { role: 'assistant', content: greeting }])
     } else {
@@ -89,11 +84,35 @@ export default function ChatWindow({
   async function handleSpeak(text: string, speakerIndex?: number) {
     setSpeaking(true)
     try {
-      await speakText(text, selectedLang, selectedRate, speakerIndex)
+      if (selectedMode === 'groq') {
+        await speakWithGroq(text, speakerIndex)
+      } else {
+        await speakText(text, selectedLang, selectedMode as number, speakerIndex)
+      }
     } catch (e) {
       console.error('Speech error:', e)
     } finally {
       setSpeaking(false)
+    }
+  }
+
+  async function handleListen(targetIndex: number) {
+    if (listening) {
+      stopListening()
+      setListening(false)
+      setListeningForIndex(null)
+      return
+    }
+    setListening(true)
+    setListeningForIndex(targetIndex)
+    try {
+      const transcript = await startListening(useWhisper)
+      setInput(transcript)
+    } catch (e) {
+      console.error('Listen error:', e)
+    } finally {
+      setListening(false)
+      setListeningForIndex(null)
     }
   }
 
@@ -120,9 +139,8 @@ export default function ChatWindow({
 
       if (Array.isArray(data.examples)) {
         if (content) {
-          nextMessages.push({ role: 'assistant', content })
+          nextMessages.push({ role: 'assistant', content, type: 'text' })
         }
-        // speaker 목록 추출 → A/B/C 인덱스 매핑 (남/여 교대 TTS용)
         const speakerList: string[] = []
         data.examples.forEach((item: any) => {
           if (!item || typeof item !== 'object') return
@@ -134,10 +152,11 @@ export default function ChatWindow({
           }
           const speakerIndex = rawSpeaker ? speakerList.indexOf(rawSpeaker) : undefined
           const speakerLabel = speakerIndex !== undefined ? String.fromCharCode(65 + speakerIndex) : undefined
-          nextMessages.push({ role: 'assistant', content: text, speaker: speakerLabel, speakerIndex })
+          const msgType: Message['type'] = item.type === 'output_prompt' ? 'output_prompt' : 'example'
+          nextMessages.push({ role: 'assistant', content: text, type: msgType, speaker: speakerLabel, speakerIndex })
         })
       } else {
-        nextMessages.push({ role: 'assistant', content })
+        nextMessages.push({ role: 'assistant', content, type: 'text' })
       }
 
       setMessages(nextMessages)
@@ -165,6 +184,7 @@ export default function ChatWindow({
           {
             role: 'assistant',
             content: `✅ 저장 완료!\n📝 요약: ${data.log.summary}\n💡 메모: ${data.log.notes}`,
+            type: 'text',
           },
         ])
         setShowUndoButton(true)
@@ -190,10 +210,7 @@ export default function ChatWindow({
       if (data.ok) {
         setMessages((prev) => [
           ...prev,
-          {
-            role: 'assistant',
-            content: data.message,
-          },
+          { role: 'assistant', content: data.message, type: 'text' },
         ])
         setShowUndoButton(false)
         onSessionSaved?.()
@@ -214,6 +231,7 @@ export default function ChatWindow({
         ::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
         .msg-user { background: #1a1a1a; border-left: 2px solid #e8ff47; }
         .msg-assistant { background: transparent; border-left: 2px solid #333; }
+        .msg-output-prompt { background: transparent; border-left: 2px solid #4a9eff; }
         textarea { resize: none; }
         .blink { animation: blink 1s step-end infinite; }
         @keyframes blink { 50% { opacity: 0; } }
@@ -251,7 +269,8 @@ export default function ChatWindow({
               <select
                 value={selectedLang}
                 onChange={(e) => setSelectedLang(e.target.value as TTSLanguage)}
-                className="bg-[#1a1a1a] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-[#e8ff47]"
+                disabled={selectedMode === 'groq'}
+                className="bg-[#1a1a1a] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-[#e8ff47] disabled:opacity-30 disabled:cursor-not-allowed"
               >
                 {getAllLanguages().map((lang) => (
                   <option key={lang} value={lang}>
@@ -259,16 +278,30 @@ export default function ChatWindow({
                   </option>
                 ))}
               </select>
+              {selectedMode === 'groq' && (
+                <span className="text-[10px] text-[#444]">Groq 선택 시 미국식 고정</span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-[#555]">음성 인식:</label>
+              <select
+                value={useWhisper ? 'whisper' : 'webspeech'}
+                onChange={(e) => setUseWhisper(e.target.value === 'whisper')}
+                className="bg-[#1a1a1a] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-[#e8ff47]"
+              >
+                <option value="whisper">Whisper</option>
+                <option value="webspeech">Web Speech</option>
+              </select>
             </div>
             <div className="flex items-center gap-2">
               <label className="text-xs text-[#555]">음성 속도:</label>
               <select
-                value={selectedRate}
-                onChange={(e) => setSelectedRate(parseFloat(e.target.value))}
+                value={selectedMode === 'groq' ? 'groq' : String(selectedMode)}
+                onChange={(e) => setSelectedMode(e.target.value === 'groq' ? 'groq' : parseFloat(e.target.value))}
                 className="bg-[#1a1a1a] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-[#e8ff47]"
               >
                 {SPEECH_RATES.map((rate) => (
-                  <option key={rate.value} value={rate.value}>
+                  <option key={String(rate.value)} value={String(rate.value)}>
                     {rate.label}
                   </option>
                 ))}
@@ -279,26 +312,53 @@ export default function ChatWindow({
       )}
 
       <div className="flex-1 overflow-y-auto px-4 py-6 space-y-4 max-w-2xl mx-auto w-full">
-        {messages.map((msg, i) => (
-          <div key={i} className={`px-4 py-3 rounded-sm text-sm leading-relaxed whitespace-pre-wrap ${msg.role === 'user' ? 'msg-user' : 'msg-assistant'}`}>
-            <span className={`text-xs font-medium mr-2 ${msg.role === 'user' ? 'text-[#e8ff47]' : 'text-[#555]'}`}>
-              {msg.role === 'user' ? 'you' : msg.speaker ?? 'ai'}
-            </span>
-            <div className="inline-block">
-              {msg.content}
-              {msg.role === 'assistant' && showLanguageSelector && (
-                <button
-                  onClick={() => handleSpeak(msg.content.replace(/\[.*?\]\s/, ''), msg.speakerIndex)}
-                  disabled={speaking}
-                  className="ml-2 text-[#e8ff47] hover:text-white transition-colors disabled:opacity-40 text-xs"
-                  title="음성으로 읽어주기"
-                >
-                  🔊
-                </button>
-              )}
+        {messages.map((msg, i) => {
+          const isExample = msg.type === 'example'
+          const isOutputPrompt = msg.type === 'output_prompt'
+          const isUser = msg.role === 'user'
+
+          return (
+            <div
+              key={i}
+              className={`px-4 py-3 rounded-sm text-sm leading-relaxed whitespace-pre-wrap ${
+                isUser ? 'msg-user' : isOutputPrompt ? 'msg-output-prompt' : 'msg-assistant'
+              }`}
+            >
+              <span className={`text-xs font-medium mr-2 ${isUser ? 'text-[#e8ff47]' : isOutputPrompt ? 'text-[#4a9eff]' : 'text-[#555]'}`}>
+                {isUser ? 'you' : isExample ? (msg.speaker ?? 'ex') : isOutputPrompt ? '📝 output' : 'ai'}
+              </span>
+              <div className="inline-block">
+                {msg.content}
+                {/* 예문에만 🔊 버튼 */}
+                {isExample && showLanguageSelector && (
+                  <button
+                    onClick={() => handleSpeak(msg.content, msg.speakerIndex)}
+                    disabled={speaking}
+                    className="ml-2 text-[#e8ff47] hover:text-white transition-colors disabled:opacity-40 text-xs"
+                    title="음성으로 읽어주기"
+                  >
+                    🔊
+                  </button>
+                )}
+                {/* 아웃풋 프롬프트에만 🎙 버튼 */}
+                {isOutputPrompt && showLanguageSelector && (
+                  <button
+                    onClick={() => handleListen(i)}
+                    disabled={speaking}
+                    className={`ml-2 transition-colors text-xs ${
+                      listening && listeningForIndex === i
+                        ? 'text-red-400 animate-pulse'
+                        : 'text-[#4a9eff] hover:text-white disabled:opacity-40'
+                    }`}
+                    title={listening && listeningForIndex === i ? '녹음 중지' : '음성으로 답하기'}
+                  >
+                    {listening && listeningForIndex === i ? '⏹' : '🎙'}
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
         {showUndoButton && (
           <div className="px-4 py-3 rounded-sm text-xs">
             <button

@@ -1,4 +1,5 @@
 export type TTSLanguage = 'en-US' | 'en-GB' | 'en-IN' | 'en-AU' | 'en-CA' | 'en-IE' | 'en-NZ' | 'en-ZA' | 'de-DE' | 'random'
+export type TTSMode = 'groq' | number  // 'groq' or speech rate (0.8~1.7)
 
 const LANGUAGES: Record<TTSLanguage, string> = {
   'en-US': '🇺🇸 미국',
@@ -30,17 +31,25 @@ function getActualLang(lang: TTSLanguage): string {
   return lang
 }
 
+// voices 로드 대기 (voiceschanged 이벤트 활용)
+function getVoices(): Promise<SpeechSynthesisVoice[]> {
+  return new Promise(resolve => {
+    const voices = window.speechSynthesis.getVoices()
+    if (voices.length > 0) return resolve(voices)
+    window.speechSynthesis.addEventListener('voiceschanged', () => {
+      resolve(window.speechSynthesis.getVoices())
+    }, { once: true })
+  })
+}
+
 // speaker 인덱스(0,1,2...) → 남/여 교대로 voice 반환
-// 0,2,4... → 남성, 1,3,5... → 여성
-function getVoiceForSpeakerIndex(index: number, lang: string): SpeechSynthesisVoice | null {
-  const voices = window.speechSynthesis.getVoices()
+async function getVoiceForSpeakerIndex(index: number, lang: string): Promise<SpeechSynthesisVoice | null> {
+  const voices = await getVoices()
   const isMale = index % 2 === 0
 
-  // 해당 언어 voice만 필터 (앞 2자리 언어코드 기준)
   const langVoices = voices.filter(v => v.lang.startsWith(lang.split('-')[0]))
   if (langVoices.length === 0) return null
 
-  // 이름 기반 성별 추측
   const maleKeywords = ['male', 'man', 'david', 'mark', 'james', 'daniel', 'thomas', 'george', 'ryan', 'fred']
   const femaleKeywords = ['female', 'woman', 'samantha', 'karen', 'victoria', 'kate', 'lisa', 'moira', 'fiona', 'tessa', 'zira']
 
@@ -51,7 +60,6 @@ function getVoiceForSpeakerIndex(index: number, lang: string): SpeechSynthesisVo
       : femaleKeywords.some(k => name.includes(k))
   })
 
-  // 매칭되면 사용, 없으면 인덱스로 교대 폴백
   if (targeted.length > 0) return targeted[0]
   return langVoices[index % langVoices.length] ?? null
 }
@@ -60,9 +68,10 @@ export async function speakText(
   text: string,
   lang: TTSLanguage = 'en-US',
   rate: number = 1.1,
-  speakerIndex?: number  // 0=첫번째 화자, 1=두번째... undefined=단일 TTS
+  speakerIndex?: number,
+  cancelPrevious: boolean = true
 ): Promise<void> {
-  return new Promise((resolve, reject) => {
+  return new Promise(async (resolve, reject) => {
     if (!('speechSynthesis' in window)) {
       reject(new Error('Speech Synthesis not supported'))
       return
@@ -75,21 +84,83 @@ export async function speakText(
     utterance.pitch = 1
     utterance.volume = 1
 
-    // speakerIndex 있으면 성별 voice 배정
     if (speakerIndex !== undefined) {
-      const voice = getVoiceForSpeakerIndex(speakerIndex, actualLang)
+      const voice = await getVoiceForSpeakerIndex(speakerIndex, actualLang)
       if (voice) utterance.voice = voice
     }
 
     utterance.onend = () => resolve()
     utterance.onerror = () => reject(new Error('Speech synthesis failed'))
 
-    window.speechSynthesis.cancel()
+    if (cancelPrevious) window.speechSynthesis.cancel()
     window.speechSynthesis.speak(utterance)
   })
 }
 
-export async function startListening(): Promise<string> {
+// Groq TTS - 서버 API 호출 후 audio blob 재생
+export async function speakWithGroq(text: string, speakerIndex?: number): Promise<void> {
+  const res = await fetch('/api/tts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, speakerIndex }),
+  })
+  if (!res.ok) throw new Error('Groq TTS 호출 실패')
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  return new Promise((resolve, reject) => {
+    const audio = new Audio(url)
+    audio.onended = () => { URL.revokeObjectURL(url); resolve() }
+    audio.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Audio 재생 실패')) }
+    audio.play()
+  })
+}
+
+// 모듈 레벨에서 recognition 인스턴스 관리 (stopListening 버그 수정)
+let activeRecognition: any = null
+let activeMediaRecorder: MediaRecorder | null = null
+
+export async function startListening(useWhisper: boolean = false): Promise<string> {
+  if (useWhisper) {
+    return startListeningWhisper()
+  }
+  return startListeningWebSpeech()
+}
+
+// Whisper STT — 녹음 후 서버로 전송, 들린 그대로 전사
+async function startListeningWhisper(): Promise<string> {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+  const chunks: BlobPart[] = []
+
+  return new Promise((resolve, reject) => {
+    const recorder = new MediaRecorder(stream)
+    activeMediaRecorder = recorder
+
+    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data) }
+    recorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop())
+      activeMediaRecorder = null
+      try {
+        const blob = new Blob(chunks, { type: 'audio/webm' })
+        const form = new FormData()
+        form.append('audio', blob)
+        const res = await fetch('/api/stt', { method: 'POST', body: form })
+        const data = await res.json()
+        resolve(data.text ?? '')
+      } catch (e) {
+        reject(e)
+      }
+    }
+    recorder.onerror = () => {
+      stream.getTracks().forEach(t => t.stop())
+      activeMediaRecorder = null
+      reject(new Error('Recording failed'))
+    }
+
+    recorder.start()
+  })
+}
+
+async function startListeningWebSpeech(): Promise<string> {
   return new Promise((resolve, reject) => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
 
@@ -103,20 +174,24 @@ export async function startListening(): Promise<string> {
     recognition.continuous = false
     recognition.interimResults = false
 
-    recognition.onstart = () => {
-      console.log('Listening started')
-    }
+    activeRecognition = recognition
 
     recognition.onresult = (event: any) => {
       let transcript = ''
       for (let i = event.resultIndex; i < event.results.length; i++) {
         transcript += event.results[i][0].transcript
       }
+      activeRecognition = null
       resolve(transcript.trim())
     }
 
     recognition.onerror = () => {
+      activeRecognition = null
       reject(new Error('Speech recognition failed'))
+    }
+
+    recognition.onend = () => {
+      activeRecognition = null
     }
 
     recognition.start()
@@ -124,9 +199,12 @@ export async function startListening(): Promise<string> {
 }
 
 export function stopListening(): void {
-  const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-  if (SpeechRecognition) {
-    const recognition = new SpeechRecognition()
-    recognition.stop()
+  if (activeRecognition) {
+    activeRecognition.stop()
+    activeRecognition = null
+  }
+  if (activeMediaRecorder && activeMediaRecorder.state !== 'inactive') {
+    activeMediaRecorder.stop()
+    // activeMediaRecorder는 onstop에서 null 처리
   }
 }

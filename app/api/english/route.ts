@@ -191,12 +191,16 @@ ${learnedExpressions.length > 0 ? learnedExpressions.slice(-20).join(', ') : '�
 {
   "text": "설명, 안내, 피드백 텍스트",
   "examples": [
-    { "speaker": "John", "sentence": "예문" },
-    { "speaker": "Sarah", "sentence": "예문" }
+    { "speaker": "John", "sentence": "예문", "type": "example" },
+    { "speaker": "Sarah", "sentence": "예문", "type": "example" }
   ]
 }
 예문/상황극은 examples에, 설명/안내/피드백은 text에 담아.
 예문이 없으면 examples는 빈 배열로.
+
+type 규칙:
+- 1단계(예문 인풋), 2단계(상황극 인풋): "type": "example"
+- 3단계(아웃풋 연습) 사용자가 직접 말해야 하는 문장/상황: "type": "output_prompt"
 
 speaker 규칙:
 - 화자는 실제 인물명으로 (John, Sarah, Mike, Emma 등 상황에 맞게)

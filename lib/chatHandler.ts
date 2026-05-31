@@ -6,12 +6,18 @@ export type ChatHandlerOptions = {
   type: 'english' | 'smalltalk' | 'stock' | 'assistant'
 }
 
+export type ExampleItem = {
+  speaker: string
+  sentence: string
+  type?: 'example' | 'output_prompt'
+}
+
 export type ChatHandlerResponse = {
   content: string
   provider: string
   availableProviders: string[]
   disabledProviders?: string[]
-  examples?: Array<{ speaker: string; sentence: string }>
+  examples?: ExampleItem[]
 }
 
 type LLMResult = { content: string; provider: string }
@@ -68,15 +74,16 @@ export function parseExampleResponse(raw: string) {
   try {
     const parsed = JSON.parse(cleaned)
     if (parsed && typeof parsed === 'object' && Array.isArray((parsed as any).examples)) {
-      const examples = (parsed as any).examples
+      const examples: ExampleItem[] = (parsed as any).examples
         .filter((item: any) => item && typeof item === 'object')
         .map((item: any) => ({
           speaker: String(item.speaker || item.role || 'Example'),
           sentence: String(item.sentence ?? item.text ?? ''),
+          type: item.type === 'output_prompt' ? 'output_prompt' : 'example',
         }))
-        .filter((item: any) => item.sentence)
+        .filter((item: ExampleItem) => item.sentence)
       return { text: typeof parsed.text === 'string' ? parsed.text.trim() : '', examples }
     }
   } catch { /* fallback */ }
-  return { text: '', examples: [] }
+  return { text: '', examples: [] as ExampleItem[] }
 }

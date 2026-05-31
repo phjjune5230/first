@@ -39,19 +39,7 @@ export default function EnglishPage() {
   }
 
   function processContent(content: string) {
-    const cleaned = content.replace('```json', '').replace('```', '').trim()
-    try {
-      const parsed = JSON.parse(cleaned)
-      if (parsed && typeof parsed === 'object' && Array.isArray(parsed.examples)) {
-        const text = typeof parsed.text === 'string' ? parsed.text.trim() : ''
-        const exampleLines = parsed.examples
-          .map((item: any) => `${item.speaker || '예시'}: ${item.sentence || item.text || ''}`)
-          .filter(Boolean)
-        return [text, ...exampleLines].filter(Boolean).join('\n')
-      }
-    } catch {
-      // JSON이 아니라면 기존 텍스트 처리 유지
-    }
+    // examples는 chatHandler에서 분리되어 내려오므로 여기선 text 정리만
     return content.replace('[SETUP_READY]', '').replace(/\{[\s\S]*\}/, '').trim()
   }
 
