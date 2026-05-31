@@ -1,20 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { appendDailyLog, getState, updateState, supabase } from '@/lib/supabase'
-import { callAssistantLLM, callAssistantLLMWithProvider, ALL_PROVIDERS } from '@/lib/llm'
+import { appendDailyLog, getState, updateState } from '@/lib/supabase'
+import { handleChat } from '@/lib/chatHandler'
+import { getDefaultOptions } from '@/lib/defaultOptions'
 import { validateProvider } from '@/lib/validation'
+import { callAssistantLLM, ALL_PROVIDERS } from '@/lib/llm'
 
 export async function POST(req: NextRequest) {
   const { messages, action, provider } = await req.json()
-
   const validProvider = validateProvider(provider)
-  if (action === 'save_session') {
-    const result = await callAssistantLLM([
-      { role: 'system', content: '다음 대화를 요약해서 JSON만 반환해. 필드는 summary, notes, weak_points(배열).' },
-      { role: 'user', content: `대화:
-${messages.map((m: any) => `${m.role}: ${m.content}`).join('\n')}` },
-    ], '친근한 톤으로 요약하되 JSON만 반환해')
 
+  // save_session 액션 처리
+  if (action === 'save_session') {
     try {
+      const result = await callAssistantLLM(
+        [
+          { role: 'system', content: '다음 대화를 요약해서 JSON만 반환해. 필드는 summary, notes, weak_points(배열).' },
+          {
+            role: 'user',
+            content: `대화:\n${messages.map((m: any) => `${m.role}: ${m.content}`).join('\n')}`,
+          },
+        ],
+        '친근한 톤으로 요약하되 JSON만 반환해'
+      )
+
       const parsed = JSON.parse(result.content.replace(/```json|```/g, '').trim())
       const log = {
         date: new Date().toISOString().split('T')[0],
@@ -27,25 +35,33 @@ ${messages.map((m: any) => `${m.role}: ${m.content}`).join('\n')}` },
       if (state) await updateState({ current_day: (state.current_day || 0) + 1 })
       return NextResponse.json({ ok: true, log })
     } catch (e) {
+      console.error('Save session error:', e)
       return NextResponse.json({ ok: false, error: '요약 파싱 실패' })
     }
   }
 
   // 일반 잡담 채팅
-  const systemPrompt = `너는 가볍게 수다 떠는 잡담 비서야. 친근하고 짧은 응답을 선호해. 한국어로 대화해.`
+  try {
+    const systemPrompt = `너는 가볍게 수다 떠는 잡담 비서야. 친근하고 짧은 응답을 선호해. 한국어로 대화해.`
+    const options = getDefaultOptions('smalltalk')
 
-  const result = await callAssistantLLMWithProvider(messages, systemPrompt, validProvider)
-  // 실패 제한 초과된 공급자를 UI에 전달
-  const { data } = await supabase.from('llm_state').select('error_counts').eq('id', 1).single()
-  const disabledProviders = Object.entries(data?.error_counts || {})
-    .filter(([, count]) => typeof count === 'number' && count >= 3)
-    .map(([p]) => p)
+    const result = await handleChat(messages, systemPrompt, validProvider, options)
 
-  const content = `[${result.provider}] ${result.content}`
-  return NextResponse.json({ 
-    content, 
-    provider: result.provider, 
-    availableProviders: ALL_PROVIDERS,
-    disabledProviders 
-  })
+    return NextResponse.json({
+      content: result.content,
+      provider: result.provider,
+      availableProviders: ALL_PROVIDERS,
+      disabledProviders: result.disabledProviders,
+    })
+  } catch (err) {
+    console.error('LLM call error:', err)
+    return NextResponse.json(
+      {
+        ok: false,
+        error: String(err),
+        availableProviders: ALL_PROVIDERS,
+      },
+      { status: 500 }
+    )
+  }
 }

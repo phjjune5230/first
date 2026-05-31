@@ -1,13 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getState, appendDailyLog, updateState, DailyLog, supabase } from '@/lib/supabase'
-import { callEnglishLLMWithProvider, ALL_PROVIDERS } from '@/lib/llm'
+import { getState, appendDailyLog, updateState, supabase } from '@/lib/supabase'
+import { handleEnglishChat } from '@/lib/chatHandler'
+import { getDefaultOptions } from '@/lib/defaultOptions'
 import { validateProvider } from '@/lib/validation'
+import { callEnglishLLMWithProvider, ALL_PROVIDERS } from '@/lib/llm'
 
 export async function POST(req: NextRequest) {
   const body = await req.json()
   const { messages, action, provider } = body
   const state = await getState()
 
+  // save_session 액션 처리
   if (action === 'save_session') {
     try {
       const validProvider = validateProvider(provider)
@@ -25,7 +28,7 @@ ${messages.map((m: { role: string; content: string }) => `${m.role}: ${m.content
       )
       const cleaned = result.content.replace(/```json|```/g, '').trim()
       const parsed = JSON.parse(cleaned)
-      const log: DailyLog = { date: new Date().toISOString().split('T')[0], ...parsed }
+      const log = { date: new Date().toISOString().split('T')[0], ...parsed }
       await appendDailyLog(log)
       if (state) await updateState({ current_day: state.current_day + 1 })
       return NextResponse.json({ ok: true, log })
@@ -35,6 +38,7 @@ ${messages.map((m: { role: string; content: string }) => `${m.role}: ${m.content
     }
   }
 
+  // undo_day 액션 처리
   if (action === 'undo_day') {
     if (state && state.current_day > 1) {
       await updateState({ current_day: state.current_day - 1 })
@@ -43,18 +47,15 @@ ${messages.map((m: { role: string; content: string }) => `${m.role}: ${m.content
     return NextResponse.json({ ok: false, error: '첫 날이라 되돌릴 수 없어요.' })
   }
 
+  // 일반 채팅
   try {
     const validProvider = validateProvider(provider)
     const systemPrompt = buildSystemPrompt(state)
-    const result = await callEnglishLLMWithProvider(messages, systemPrompt, validProvider)
-    const { data } = await supabase.from('llm_state').select('error_counts').eq('id', 1).single()
-    const disabledProviders = Object.entries(data?.error_counts || {})
-      .filter(([, count]) => typeof count === 'number' && count >= 3)
-      .map(([p]) => p)
+    const options = getDefaultOptions('english')
+    
+    const result = await handleEnglishChat(messages, systemPrompt, validProvider, options)
 
-    const parsedResult = parseExampleResponse(result.content)
-    const content = parsedResult.text ? `[${result.provider}] ${parsedResult.text}` : `[${result.provider}] ${result.content}`
-
+    // Curriculum 저장 처리
     if (result.content.includes('[CURRICULUM_READY]')) {
       const jsonMatch = result.content.match(/\[CURRICULUM_READY\]\s*({[\s\S]*})/)
       if (jsonMatch) {
@@ -65,44 +66,24 @@ ${messages.map((m: { role: string; content: string }) => `${m.role}: ${m.content
       }
     }
 
-    return NextResponse.json({ 
-      content, 
-      provider: result.provider, 
+    return NextResponse.json({
+      content: result.content,
+      provider: result.provider,
       availableProviders: ALL_PROVIDERS,
-      disabledProviders, 
-      examples: parsedResult.examples 
+      disabledProviders: result.disabledProviders,
+      examples: result.examples,
     })
   } catch (err) {
     console.error('LLM call error:', err)
-    return NextResponse.json({ 
-      ok: false, 
-      error: String(err),
-      availableProviders: ALL_PROVIDERS
-    }, { status: 500 })
+    return NextResponse.json(
+      {
+        ok: false,
+        error: String(err),
+        availableProviders: ALL_PROVIDERS,
+      },
+      { status: 500 }
+    )
   }
-}
-
-function parseExampleResponse(raw: string) {
-  const cleaned = raw.replace(/```json|```/g, '').trim()
-  try {
-    const parsed = JSON.parse(cleaned)
-    if (parsed && typeof parsed === 'object' && Array.isArray((parsed as any).examples)) {
-      const examples = (parsed as any).examples
-        .filter((item: any) => item && typeof item === 'object')
-        .map((item: any) => ({
-          speaker: String(item.speaker || item.role || 'Example'),
-          sentence: String(item.sentence ?? item.text ?? ''),
-        }))
-        .filter((item: any) => item.sentence)
-      return {
-        text: typeof parsed.text === 'string' ? parsed.text.trim() : '',
-        examples,
-      }
-    }
-  } catch {
-    // fallback
-  }
-  return { text: '', examples: [] }
 }
 
 function buildSystemPrompt(state: Awaited<ReturnType<typeof getState>>) {

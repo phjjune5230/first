@@ -46,7 +46,7 @@ function shouldReset(provider: string, state: LLMState): boolean {
   }
 }
 
-async function recordError(provider: string, state: LLMState, priority?: string[]) {
+async function recordError(provider: string, state: LLMState) {
   const errorCounts = { ...state.error_counts }
   const lastErrorAt = { ...state.last_error_at }
 
@@ -65,7 +65,7 @@ async function callProvider(provider: string, messages: { role: string; content:
     const { GoogleGenerativeAI } = await import('@google/generative-ai')
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!)
     const model = genAI.getGenerativeModel({ model: 'gemini-3.1-flash-lite', systemInstruction: systemPrompt })
-    const history = messages.map(m => ({
+    const history = messages.slice(0, -1).map(m => ({
       role: m.role === 'user' ? 'user' : 'model',
       parts: [{ text: m.content }],
     }))
@@ -202,67 +202,20 @@ async function callLLMDirect(messages: { role: string; content: string }[], syst
   }
 }
 
-async function callLLMWithPriority(messages: { role: string; content: string }[], systemPrompt: string, priority: string[]): Promise<CallLLMResult> {
-  const state = await getLLMState()
-
-  const invalidProviders = Object.entries(state.error_counts)
-    .filter(([, count]) => count >= ERROR_THRESHOLD)
-    .map(([p]) => p)
-
-  let provider = state.current_provider
-  if (!provider || !priority.includes(provider) || invalidProviders.includes(provider)) {
-    provider = priority.find((p) => !invalidProviders.includes(p)) || priority[0]
-  }
-
-  const startIdx = priority.indexOf(provider)
-  const orderedProviders = startIdx >= 0 ? [...priority.slice(startIdx), ...priority.slice(0, startIdx)] : priority
-
-  for (const p of orderedProviders) {
-    if (invalidProviders.includes(p)) {
-      console.log(`[LLM] ${p}는 에러 제한 초과로 건너뜁니다.`)
-      continue
-    }
-
-    try {
-      console.log(`[LLM] 호출: ${p}`)
-      const result = await callProvider(p, messages, systemPrompt)
-      await updateLLMState({ current_provider: p })
-      return { content: result, provider: p }
-    } catch (err: unknown) {
-      console.log(`[LLM] ${p} 호출 실패:`, err)
-      const state = await getLLMState()
-      await recordError(p, state)
-      continue
-    }
-  }
-
-  throw new Error('모든 LLM 호출 실패')
-}
-
 export async function callEnglishLLM(messages: { role: string; content: string }[], systemPrompt: string, selectedProvider: string): Promise<CallLLMResult> {
   return callLLMDirect(messages, systemPrompt, selectedProvider)
 }
 
-export async function callEnglishLLMWithProvider(
-  messages: { role: string; content: string }[], 
-  systemPrompt: string, 
-  selectedProvider?: string
-): Promise<CallLLMResult> {
-  if (!selectedProvider) {
-    throw new Error('LLM provider를 선택해주세요.')
-  }
+export async function callEnglishLLMWithProvider(messages: { role: string; content: string }[], systemPrompt: string, selectedProvider?: string): Promise<CallLLMResult> {
+  return callLLMDirect(messages, systemPrompt, selectedProvider || '')
+}
+
+export async function callAssistantLLM(messages: { role: string; content: string }[], systemPrompt: string, selectedProvider: string): Promise<CallLLMResult> {
   return callLLMDirect(messages, systemPrompt, selectedProvider)
 }
 
-export async function callAssistantLLM(messages: { role: string; content: string }[], systemPrompt: string): Promise<CallLLMResult> {
-  return callLLMWithPriority(messages, systemPrompt, ALL_PROVIDERS)
-}
-
 export async function callAssistantLLMWithProvider(messages: { role: string; content: string }[], systemPrompt: string, selectedProvider?: string): Promise<CallLLMResult> {
-  if (selectedProvider) {
-    return callLLMDirect(messages, systemPrompt, selectedProvider)
-  }
-  return callLLMWithPriority(messages, systemPrompt, ALL_PROVIDERS)
+  return callLLMDirect(messages, systemPrompt, selectedProvider || '')
 }
 
 export async function callStockLLM(messages: { role: string; content: string }[], systemPrompt: string, selectedProvider: string): Promise<CallLLMResult> {
