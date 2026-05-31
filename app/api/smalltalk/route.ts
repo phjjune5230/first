@@ -33,14 +33,19 @@ export async function POST(req: NextRequest) {
     try {
       const conv = await getSmalltalkConversation(conversationId)
       const prevSummary = conv?.summary || ''
+      const summarizedUpTo = (conv?.last_messages as any)?.summarizedUpTo ?? 0
 
-      // 오래된 메시지(앞부분)를 LLM으로 요약
-      const summaryPrompt = `다음은 잡담 대화야. 핵심 내용을 3~5문장으로 요약해줘. 이전 요약이 있으면 합쳐서 업데이트해.
+      const chatMessages = messages.filter((m: { role: string }) => m.role === 'user' || m.role === 'assistant')
+      const unsummarized = chatMessages.slice(summarizedUpTo)
+
+      if (unsummarized.length === 0) return NextResponse.json({ ok: true })
+
+      const summaryPrompt = `다음은 잡담 대화야. 이름, 나이, 직업 등 사실 정보와 주요 토픽을 포함해서 3~7문장으로 요약해줘. 이전 요약이 있으면 합쳐서 하나로 업데이트해.
 
 이전 요약: ${prevSummary || '없음'}
 
 새 대화:
-${messages.map((m: { role: string; content: string }) => `${m.role === 'user' ? '나' : 'AI'}: ${m.content}`).join('\n')}
+${unsummarized.map((m: { role: string; content: string }) => `${m.role === 'user' ? '나' : 'AI'}: ${m.content}`).join('\n')}
 
 요약:`
 
@@ -50,14 +55,9 @@ ${messages.map((m: { role: string; content: string }) => `${m.role === 'user' ? 
         validProvider
       )
 
-      // 최근 20개 메시지만 저장
-      const recentMessages = messages
-        .filter((m: { role: string }) => m.role === 'user' || m.role === 'assistant')
-        .slice(-20)
-
       await updateSmalltalkConversation(conversationId, {
         summary: summaryResult.content,
-        last_messages: recentMessages,
+        last_messages: { summarizedUpTo: chatMessages.length } as any,
       })
 
       return NextResponse.json({ ok: true, summary: summaryResult.content })
@@ -78,20 +78,60 @@ ${messages.map((m: { role: string; content: string }) => `${m.role === 'user' ? 
 
   // ── 일반 대화 ─────────────────────────────────────
   try {
-    // 이어하기: 해당 대화의 요약을 system prompt에 주입
-    let contextSummary = ''
+    const SUMMARY_EVERY = 20  // 20턴마다 요약
+    const chatMessages = messages.filter((m: { role: string }) => m.role === 'user' || m.role === 'assistant')
+
+    // 현재 대화의 요약 + 요약 이후 메시지 수 불러오기
+    let currentSummary = ''
+    let summarizedUpTo = 0  // 몇 번째 메시지까지 요약됐는지
     if (conversationId) {
       const conv = await getSmalltalkConversation(conversationId)
-      if (conv?.summary) {
-        contextSummary = `\n\n[이전 대화 기억]: ${conv.summary}`
-      }
+      currentSummary = conv?.summary || ''
+      summarizedUpTo = (conv?.last_messages as any)?.summarizedUpTo ?? 0
     }
 
+    // 요약 안 된 메시지들
+    const unsummarizedMessages = chatMessages.slice(summarizedUpTo)
+
+    // 20턴 도달 시 자동 요약
+    if (unsummarizedMessages.length >= SUMMARY_EVERY && conversationId) {
+      const toSummarize = unsummarizedMessages  // 요약 안 된 전체
+      const summaryPrompt = `다음은 잡담 대화야. 이름, 나이, 직업 등 사실 정보와 주요 토픽을 포함해서 3~7문장으로 요약해줘. 이전 요약이 있으면 합쳐서 하나로 업데이트해.
+
+이전 요약: ${currentSummary || '없음'}
+
+새 대화:
+${toSummarize.map((m: { role: string; content: string }) => `${m.role === 'user' ? '나' : 'AI'}: ${m.content}`).join('\n')}
+
+요약:`
+
+      const summaryResult = await callAssistantLLMWithProvider(
+        [{ role: 'user', content: summaryPrompt }],
+        '너는 대화 요약 도우미야. 핵심만 간결하게 요약해.',
+        validProvider
+      )
+
+      currentSummary = summaryResult.content
+      summarizedUpTo = chatMessages.length  // 현재까지 전부 요약됨
+
+      // 요약 저장
+      await updateSmalltalkConversation(conversationId, {
+        summary: currentSummary,
+        last_messages: { summarizedUpTo } as any,
+      })
+    }
+
+    // LLM에 보낼 메시지: 요약 이후 메시지들
+    const messagesForLLM = chatMessages.slice(summarizedUpTo)
+
+    // system prompt에 누적 요약 주입
+    const contextSummary = currentSummary ? `\n\n[이전 대화 기억]: ${currentSummary}` : ''
     const systemPrompt = `너는 가볍게 수다 떠는 잡담 비서야. 친근하고 짧은 응답을 선호해. 한국어로 대화해.${contextSummary}`
 
-    const result = await handleChat(messages, systemPrompt, validProvider, getDefaultOptions('smalltalk'))
+    // chatHandler의 maxMessages 슬라이싱 우회 (직접 제어)
+    const result = await handleChat(messagesForLLM, systemPrompt, validProvider, { type: 'smalltalk' })
 
-    const firstUserMessage = messages.find((m: { role: string }) => m.role === 'user')?.content
+    const firstUserMessage = chatMessages[0]?.content
 
     return NextResponse.json({
       content: result.content,
