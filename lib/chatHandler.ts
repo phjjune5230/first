@@ -3,8 +3,6 @@ import { supabase } from './supabase'
 
 export type ChatHandlerOptions = {
   maxMessages?: number
-  checkContextNeed?: boolean
-  useContext?: boolean
   type: 'english' | 'smalltalk' | 'stock' | 'assistant'
 }
 
@@ -14,105 +12,58 @@ export type ChatHandlerResponse = {
   availableProviders: string[]
   disabledProviders?: string[]
   examples?: Array<{ speaker: string; sentence: string }>
-  [key: string]: any
 }
 
-/**
- * 모든 비서의 메시지 처리를 담당하는 중앙 핸들러
- * - 메시지 필터링
- * - LLM 호출
- * - 응답 파싱
- * - 에러 처리
- */
+type LLMResult = { content: string; provider: string }
+
+async function getDisabledProviders(): Promise<string[]> {
+  const { data } = await supabase.from('llm_state').select('error_counts').eq('id', 1).single()
+  return Object.entries(data?.error_counts || {})
+    .filter(([, count]) => typeof count === 'number' && count >= 3)
+    .map(([p]) => p)
+}
+
 export async function handleChat(
   messages: Array<{ role: string; content: string }>,
   systemPrompt: string,
   selectedProvider: string | undefined,
   options: ChatHandlerOptions
 ): Promise<ChatHandlerResponse> {
-  const { maxMessages, type } = options
+  const filteredMessages = options.maxMessages ? messages.slice(-options.maxMessages) : messages
+  const disabledProviders = await getDisabledProviders()
 
-  // 1. 메시지 필터링
-  const filteredMessages = maxMessages ? messages.slice(-maxMessages) : messages
-
-  // 2. LLM 호출 (type별로 다른 함수 사용)
-  let result
-  if (type === 'english') {
-    if (!selectedProvider) throw new Error('LLM provider를 선택해주세요.')
+  let result: LLMResult
+  if (options.type === 'english') {
     result = await callEnglishLLMWithProvider(filteredMessages, systemPrompt, selectedProvider)
-  } else if (type === 'smalltalk') {
-    if (!selectedProvider) throw new Error('LLM provider를 선택해주세요.')
+  } else if (options.type === 'smalltalk') {
     result = await callAssistantLLMWithProvider(filteredMessages, systemPrompt, selectedProvider)
-  } else if (type === 'stock') {
-    if (!selectedProvider) throw new Error('LLM provider를 선택해주세요.')
-    result = await callStockLLM(filteredMessages, systemPrompt, selectedProvider)
-  } else if (type === 'assistant') {
-    // assistant는 priority 기반
+  } else if (options.type === 'stock') {
+    result = await callStockLLM(filteredMessages, systemPrompt, selectedProvider!)
+  } else {
     result = await callAssistantLLM(filteredMessages, systemPrompt)
   }
 
-  // 3. 비활성화된 provider 확인
-  const { data } = await supabase.from('llm_state').select('error_counts').eq('id', 1).single()
-  const disabledProviders = Object.entries(data?.error_counts || {})
-    .filter(([, count]) => typeof count === 'number' && count >= 3)
-    .map(([p]) => p)
-
-  // 4. 응답 포맷팅
   const content = `[${result.provider}] ${result.content}`
-
-  return {
-    content,
-    provider: result.provider,
-    availableProviders: ALL_PROVIDERS,
-    disabledProviders,
-  }
+  return { content, provider: result.provider, availableProviders: ALL_PROVIDERS, disabledProviders }
 }
 
-/**
- * English 비서 전용 - 추가 파싱 로직 포함
- */
 export async function handleEnglishChat(
   messages: Array<{ role: string; content: string }>,
   systemPrompt: string,
   selectedProvider: string | undefined,
   options: ChatHandlerOptions
 ): Promise<ChatHandlerResponse> {
-  const { maxMessages } = options
+  const filteredMessages = options.maxMessages ? messages.slice(-options.maxMessages) : messages
+  const disabledProviders = await getDisabledProviders()
 
-  const filteredMessages = maxMessages ? messages.slice(-maxMessages) : messages
-
-  if (!selectedProvider) throw new Error('LLM provider를 선택해주세요.')
   const result = await callEnglishLLMWithProvider(filteredMessages, systemPrompt, selectedProvider)
-
-  const { data } = await supabase.from('llm_state').select('error_counts').eq('id', 1).single()
-  const disabledProviders = Object.entries(data?.error_counts || {})
-    .filter(([, count]) => typeof count === 'number' && count >= 3)
-    .map(([p]) => p)
-
-  // English 특화: 예제 파싱
   const parsedResult = parseExampleResponse(result.content)
   const content = parsedResult.text ? `[${result.provider}] ${parsedResult.text}` : `[${result.provider}] ${result.content}`
 
-  return {
-    content,
-    provider: result.provider,
-    availableProviders: ALL_PROVIDERS,
-    disabledProviders,
-    examples: parsedResult.examples,
-  }
+  return { content, provider: result.provider, availableProviders: ALL_PROVIDERS, disabledProviders, examples: parsedResult.examples }
 }
 
-/**
- * 메시지 필터링 유틸
- */
-export function filterMessages(messages: Array<{ role: string; content: string }>, limit: number) {
-  return messages.slice(-limit)
-}
-
-/**
- * 응답에서 예제 파싱 (English 비서용)
- */
-function parseExampleResponse(raw: string) {
+export function parseExampleResponse(raw: string) {
   const cleaned = raw.replace(/```json|```/g, '').trim()
   try {
     const parsed = JSON.parse(cleaned)
@@ -124,13 +75,8 @@ function parseExampleResponse(raw: string) {
           sentence: String(item.sentence ?? item.text ?? ''),
         }))
         .filter((item: any) => item.sentence)
-      return {
-        text: typeof parsed.text === 'string' ? parsed.text.trim() : '',
-        examples,
-      }
+      return { text: typeof parsed.text === 'string' ? parsed.text.trim() : '', examples }
     }
-  } catch {
-    // fallback
-  }
+  } catch { /* fallback */ }
   return { text: '', examples: [] }
 }
