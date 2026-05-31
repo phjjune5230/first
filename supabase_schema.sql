@@ -18,3 +18,13 @@ create table study_state (
 
 -- 단일 row로 관리 (개인용)
 insert into study_state (id) values ('00000000-0000-0000-0000-000000000001');
+
+-- smalltalk 대화 목록 테이블
+create table smalltalk_conversations (
+  id uuid primary key default gen_random_uuid(),
+  title text not null,              -- 첫 메시지 기반 자동 생성 제목
+  summary text,                     -- 누적 요약 (세션 간 기억용)
+  last_messages jsonb default '[]', -- 최근 20개 메시지 (이어하기용)
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);

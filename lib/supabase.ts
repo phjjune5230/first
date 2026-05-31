@@ -73,3 +73,83 @@ export async function appendDailyStudy(study: DailyStudy) {
     weak_points: allWeakPoints,
   })
 }
+// ────────────────────────────────────────────
+// Smalltalk 대화 관련
+// ────────────────────────────────────────────
+
+export type SmalltalkConversation = {
+  id: string
+  title: string
+  summary: string | null
+  last_messages: Array<{ role: string; content: string }>
+  created_at: string
+  updated_at: string
+}
+
+// 대화 목록 불러오기 (최신순 20개)
+export async function getSmalltalkConversations(): Promise<SmalltalkConversation[]> {
+  const { data, error } = await supabase
+    .from('smalltalk_conversations')
+    .select('*')
+    .order('updated_at', { ascending: false })
+    .limit(20)
+
+  if (error) {
+    console.error('getSmalltalkConversations error:', error)
+    return []
+  }
+  return data || []
+}
+
+// 특정 대화 불러오기
+export async function getSmalltalkConversation(id: string): Promise<SmalltalkConversation | null> {
+  const { data, error } = await supabase
+    .from('smalltalk_conversations')
+    .select('*')
+    .eq('id', id)
+    .single()
+
+  if (error) {
+    console.error('getSmalltalkConversation error:', error)
+    return null
+  }
+  return data
+}
+
+// 새 대화 생성
+export async function createSmalltalkConversation(title: string): Promise<SmalltalkConversation | null> {
+  const { data, error } = await supabase
+    .from('smalltalk_conversations')
+    .insert({ title })
+    .select()
+    .single()
+
+  if (error) {
+    console.error('createSmalltalkConversation error:', error)
+    return null
+  }
+  return data
+}
+
+// 대화 업데이트 (메시지 저장 + 요약 저장)
+export async function updateSmalltalkConversation(
+  id: string,
+  updates: { summary?: string; last_messages?: Array<{ role: string; content: string }> }
+) {
+  const { error } = await supabase
+    .from('smalltalk_conversations')
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq('id', id)
+
+  if (error) console.error('updateSmalltalkConversation error:', error)
+}
+
+// 대화 삭제
+export async function deleteSmalltalkConversation(id: string) {
+  const { error } = await supabase
+    .from('smalltalk_conversations')
+    .delete()
+    .eq('id', id)
+
+  if (error) console.error('deleteSmalltalkConversation error:', error)
+}

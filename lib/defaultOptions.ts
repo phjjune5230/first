@@ -6,7 +6,7 @@ export const defaultOptions: Record<string, ChatHandlerOptions> = {
     type: 'english',
   },
   smalltalk: {
-    maxMessages: 3,
+    maxMessages: 20,
     type: 'smalltalk',
   },
   stock: {

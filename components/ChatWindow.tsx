@@ -14,6 +14,7 @@ type Props = {
   subtitle?: string
   apiPath: string
   greeting: string
+  initialMessages?: Array<{ role: string; content: string }>
   onSessionSaved?: () => void
   extraHeader?: React.ReactNode
   extraRequestData?: Record<string, unknown>
@@ -44,6 +45,7 @@ export default function ChatWindow({
   subtitle,
   apiPath,
   greeting,
+  initialMessages,
   onSessionSaved,
   extraHeader,
   extraRequestData,
@@ -62,7 +64,13 @@ export default function ChatWindow({
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    setMessages([{ role: 'assistant', content: greeting }])
+    if (initialMessages && initialMessages.length > 0) {
+      // 이어하기: 과거 메시지 복원 후 greeting 추가
+      const restored = initialMessages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }))
+      setMessages([...restored, { role: 'assistant', content: greeting }])
+    } else {
+      setMessages([{ role: 'assistant', content: greeting }])
+    }
     setSessionActive(true)
   }, [greeting])
 
