@@ -137,7 +137,6 @@ ${toSummarize.map((m: { role: string; content: string }) => `${m.role === 'user'
       content: result.content,
       provider: result.provider,
       availableProviders: ALL_PROVIDERS,
-      disabledProviders: result.disabledProviders,
       firstUserMessage: !body.conversationId ? firstUserMessage : undefined,
     })
   } catch (err) {

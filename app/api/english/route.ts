@@ -84,7 +84,6 @@ ${messages.map((m: { role: string; content: string }) => `${m.role}: ${m.content
       content: result.content,
       provider: result.provider,
       availableProviders: ALL_PROVIDERS,
-      disabledProviders: result.disabledProviders,
       examples: result.examples,
     })
   } catch (err) {
