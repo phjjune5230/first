@@ -47,7 +47,7 @@ export default function Home() {
 
         <div className="max-w-xs w-full flex flex-col items-center gap-8">
           <h1 style={{ fontFamily: "'Syne', sans-serif", fontWeight: 700 }} className="text-3xl tracking-tight">
-            카리나
+            강_린_아
           </h1>
 
           <div className="flex gap-3">

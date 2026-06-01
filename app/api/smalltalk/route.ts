@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { handleChat } from '@/lib/chatHandler'
 import { getDefaultOptions } from '@/lib/defaultOptions'
 import { validateProvider } from '@/lib/validation'
-import { ALL_PROVIDERS, callAssistantLLMWithProvider } from '@/lib/llm'
+import { ALL_PROVIDERS, callAssistantLLMWithProvider, callSmallTalkLLM } from '@/lib/llm'
 import {
   getSmalltalkConversations,
   getSmalltalkConversation,
@@ -129,7 +129,7 @@ ${toSummarize.map((m: { role: string; content: string }) => `${m.role === 'user'
     const systemPrompt = `너는 가볍게 수다 떠는 잡담 비서야. 친근하고 짧은 응답을 선호해. 한국어로 대화해.${contextSummary}`
 
     // chatHandler의 maxMessages 슬라이싱 우회 (직접 제어)
-    const result = await handleChat(messagesForLLM, systemPrompt, validProvider, { type: 'smalltalk' })
+    const result = await callSmallTalkLLM(messagesForLLM, systemPrompt, validProvider)
 
     const firstUserMessage = chatMessages[0]?.content
 

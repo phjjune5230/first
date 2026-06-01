@@ -41,7 +41,7 @@ export default function EditPage() {
       const res = await fetch('/api/assistant', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: newMessages, action: 'edit_goal' }),
+        body: JSON.stringify({ messages: newMessages, provider: 'gpt-oss' }),
       })
       const data = await res.json()
       setMessages([...newMessages, { role: 'assistant', content: data.content }])

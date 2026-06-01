@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import { speakText, speakWithGroq, startListening, stopListening, type TTSLanguage, type TTSMode, getLanguageLabel, getAllLanguages } from '@/lib/speech'
+import { speakText, speakWithGroq, startListening, stopListening, type TTSLanguage, type TTSMode, type GroqStyle, getLanguageLabel, getAllLanguages } from '@/lib/speech'
 
 export type Message = {
   role: 'user' | 'assistant'
@@ -40,6 +40,13 @@ const SPEECH_RATES = [
   { label: 'Groq', value: 'groq' },
 ]
 
+const GROQ_STYLE_OPTIONS: { label: string; value: GroqStyle }[] = [
+  { label: 'Natural',    value: 'natural' },
+  { label: 'Confident',  value: 'confident' },
+  { label: 'Fast',       value: 'fast' },
+  { label: 'Excited',    value: 'excited' },
+]
+
 export default function ChatWindow({
   title,
   subtitle,
@@ -60,6 +67,7 @@ export default function ChatWindow({
   const [sessionActive, setSessionActive] = useState(false)
   const [selectedLang, setSelectedLang] = useState<TTSLanguage>('en-US')
   const [selectedMode, setSelectedMode] = useState<TTSMode>(1.4)
+  const [groqStyle, setGroqStyle] = useState<GroqStyle>('natural')
   const [speaking, setSpeaking] = useState(false)
   const [listening, setListening] = useState(false)
   const [listeningForIndex, setListeningForIndex] = useState<number | null>(null)
@@ -85,7 +93,7 @@ export default function ChatWindow({
     setSpeaking(true)
     try {
       if (selectedMode === 'groq') {
-        await speakWithGroq(text, speakerIndex)
+        await speakWithGroq(text, speakerIndex, groqStyle)
       } else {
         await speakText(text, selectedLang, selectedMode as number, speakerIndex)
       }
@@ -282,6 +290,20 @@ export default function ChatWindow({
                 <span className="text-[10px] text-[#444]">Groq 선택 시 미국식 고정</span>
               )}
             </div>
+            {selectedMode === 'groq' && (
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-[#555]">말하기 스타일:</label>
+                <select
+                  value={groqStyle}
+                  onChange={(e) => setGroqStyle(e.target.value as GroqStyle)}
+                  className="bg-[#1a1a1a] border border-[#2a2a2a] rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-[#e8ff47]"
+                >
+                  {GROQ_STYLE_OPTIONS.map((s) => (
+                    <option key={s.value} value={s.value}>{s.label}</option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div className="flex items-center gap-2">
               <label className="text-xs text-[#555]">음성 인식:</label>
               <select

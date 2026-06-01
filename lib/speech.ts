@@ -97,12 +97,14 @@ export async function speakText(
   })
 }
 
+export type GroqStyle = 'natural' | 'confident' | 'fast' | 'excited'
+
 // Groq TTS - 서버 API 호출 후 audio blob 재생
-export async function speakWithGroq(text: string, speakerIndex?: number): Promise<void> {
+export async function speakWithGroq(text: string, speakerIndex?: number, style: GroqStyle = 'natural'): Promise<void> {
   const res = await fetch('/api/tts', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, speakerIndex }),
+    body: JSON.stringify({ text, speakerIndex, style }),
   })
   if (!res.ok) throw new Error('Groq TTS 호출 실패')
   const blob = await res.blob()

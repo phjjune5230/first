@@ -1,59 +1,58 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getGoals, addGoal, updateGoal } from '@/lib/assistant'
-import { callAssistantLLM } from '@/lib/llm'
+import { callAssistantLLMWithTools } from '@/lib/llm'
+
+const SYSTEM_PROMPT = `너는 사용자의 목표 관리를 돕는 비서야. 한국어로 응답해.
+
+목표 추가/수정 요청이 오면 반드시 적절한 툴을 호출해.
+- 정보가 충분하면 바로 툴 호출
+- 대분류나 소분류가 없으면 먼저 질문해서 정보를 모은 후 툴 호출
+- 수정 요청 시 목표 목록을 참고해서 id를 파악하고 update_goal 호출
+- 툴 호출 후엔 "✅ 저장했어요!" 같이 짧게 확인 응답해`
 
 export async function POST(req: NextRequest) {
-  const { messages, action } = await req.json()
+  const { messages, provider, goals: clientGoals } = await req.json()
 
-  if (action === 'add_goal') {
-    const userInput = messages[messages.length - 1].content
-    const result = await callAssistantLLM(
-      [{ role: 'user', content: userInput }],
-      `사용자가 목표를 입력했어. 아래 두 가지 중 하나로 응답해.
-1. 양식이 충분하면 (대분류, 소분류 최소 있으면):
-   [SAVE_GOAL]{"category":"...","subcategory":"...","description":"...","due_date":"YYYY-MM-DD or null","status":"진행중"}
-   그리고 "저장했어요!" 라고 말해.
-2. 양식이 불충분하면: [SAVE_GOAL] 태그 없이 어떤 정보가 빠졌는지 친절하게 안내해.
-한국어로 응답해.`
+  // 목표 목록을 컨텍스트로 주입 (수정 시 id 파악용)
+  const goals = clientGoals ?? await getGoals()
+  const goalsContext = goals.length > 0
+    ? `\n\n[현재 목표 목록]:\n${JSON.stringify(goals.map((g: any) => ({ id: g.id, category: g.category, subcategory: g.subcategory, status: g.status, due_date: g.due_date })))}`
+    : ''
+
+  try {
+    const result = await callAssistantLLMWithTools(
+      messages,
+      SYSTEM_PROMPT + goalsContext,
+      provider
     )
 
-    const text = result.content
-    if (text.includes('[SAVE_GOAL]')) {
-      const jsonMatch = text.match(/\[SAVE_GOAL\]({[\s\S]*?})/)
-      if (jsonMatch) {
-        try {
-          const parsed = JSON.parse(jsonMatch[1])
-          await addGoal(parsed)
-          const content = `[${result.provider}] ✅ 목표가 저장됐어요!\n\n다른 목표도 추가하려면 입력해주세요.`
-          return NextResponse.json({ ok: true, content })
-        } catch {
-          const content = `[${result.provider}] 저장 중 오류가 발생했어요. 다시 시도해주세요.`
-          return NextResponse.json({ ok: false, content })
+    // 툴 호출이 있으면 실행
+    if (result.toolCalls && result.toolCalls.length > 0) {
+      for (const tc of result.toolCalls) {
+        if (tc.name === 'add_goal') {
+          await addGoal({
+            category:    tc.arguments.category,
+            subcategory: tc.arguments.subcategory,
+            description: tc.arguments.description ?? '',
+            due_date:    tc.arguments.due_date ?? null,
+            status:      tc.arguments.status ?? '진행중',
+          })
+        }
+        if (tc.name === 'update_goal') {
+          await updateGoal(tc.arguments.id, tc.arguments.updates)
         }
       }
-    }
-    const content = `[${result.provider}] ${text}`
-    return NextResponse.json({ ok: false, content })
-  }
 
-  if (action === 'edit_goal') {
-    const goals = await getGoals()
-    const result = await callAssistantLLM(
-      [{ role: 'user', content: messages[messages.length - 1].content }],
-      `사용자가 목표 수정을 요청했어. 현재 목표 목록:
-${JSON.stringify(goals.map(g => ({ id: g.id, category: g.category, subcategory: g.subcategory, due_date: g.due_date, status: g.status })))}
-수정할 id와 변경 내용을 JSON만 반환해: { "id": 숫자, "updates": { "변경할필드": "값" } }`
-    )
-    try {
-      const { id, updates } = JSON.parse(result.content.replace(/```json|```/g, '').trim())
-      await updateGoal(id, updates)
-      const content = `[${result.provider}] ✅ ${id}번 목표가 수정됐어요!`
-      return NextResponse.json({ ok: true, content })
-    } catch {
-      const content = `[${result.provider}] 수정 실패. 다시 입력해주세요.`
-      return NextResponse.json({ ok: false, content })
+      const toolNames = result.toolCalls.map(tc => tc.name).join(', ')
+      const content = result.content || '✅ 완료했어요!'
+      return NextResponse.json({ ok: true, content: `[${result.provider}] ${content}`, toolCalled: toolNames })
     }
-  }
 
-  return NextResponse.json({ content: '알 수 없는 요청이에요.' })
+    // 툴 호출 없음 = 추가 정보 요청 or 일반 응답
+    return NextResponse.json({ ok: false, content: `[${result.provider}] ${result.content}` })
+
+  } catch (err) {
+    console.error('assistant function calling error:', err)
+    return NextResponse.json({ ok: false, content: '오류가 발생했어요. 다시 시도해주세요.' }, { status: 500 })
+  }
 }

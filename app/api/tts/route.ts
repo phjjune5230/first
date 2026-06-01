@@ -1,8 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-// speaker 인덱스 기반으로 남/여 교대 voice 배정
 const MALE_VOICES = ['austin', 'daniel', 'troy']
 const FEMALE_VOICES = ['autumn', 'hannah', 'diana']
+
+// 스타일 지시어 — 테스트 후 교체 가능
+export const GROQ_STYLES = {
+  natural:    '',
+  confident:  '[confidently]',
+  fast:       '[fast paced]',
+  excited:    '[excited]',
+} as const
+
+export type GroqStyle = keyof typeof GROQ_STYLES
 
 function getVoice(speakerIndex?: number): string {
   if (speakerIndex === undefined) return FEMALE_VOICES[0]
@@ -11,11 +20,17 @@ function getVoice(speakerIndex?: number): string {
   return pool[Math.floor(speakerIndex / 2) % pool.length]
 }
 
+function buildInput(text: string, style: GroqStyle): string {
+  const direction = GROQ_STYLES[style]
+  return direction ? `${direction} ${text}` : text
+}
+
 export async function POST(req: NextRequest) {
-  const { text, speakerIndex } = await req.json()
+  const { text, speakerIndex, style = 'natural' } = await req.json()
   if (!text) return NextResponse.json({ error: 'text required' }, { status: 400 })
 
   const voice = getVoice(speakerIndex)
+  const input = buildInput(text, style as GroqStyle)
 
   const res = await fetch('https://api.groq.com/openai/v1/audio/speech', {
     method: 'POST',
@@ -25,7 +40,7 @@ export async function POST(req: NextRequest) {
     },
     body: JSON.stringify({
       model: 'canopylabs/orpheus-v1-english',
-      input: text,
+      input,
       voice,
       response_format: 'wav',
     }),
