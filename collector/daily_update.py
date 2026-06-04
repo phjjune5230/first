@@ -1,14 +1,52 @@
 """
-증분 수집 - 매일 장 마감 후 실행 (스케줄러용)
-- KRX : 오늘 날짜 전종목 OHLCV
-- US  : 오늘 날짜 전종목 OHLCV (NASDAQ + NYSE)
-- 로컬 SQLite 없이 Turso에 직접 upsert
-- 중복 실행 방지: Turso daily_log 테이블로 완료 여부 영속화
-  → 프로세스 재시작 후에도 이미 완료된 청크 skip (write 한도 절약)
+증분 수집 - 매일 장 마감 후 GitHub Actions로 자동 실행
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[개요]
+  KRX(KOSPI/KOSDAQ)와 미국(NASDAQ/NYSE) 전종목 일별 OHLCV를 Turso DB에 증분 upsert.
+  로컬 SQLite 없이 Turso에 직접 저장.
+
+[자동 실행 스케줄 - stock_collect.yml]
+  KRX : 평일 16:30 KST (07:30 UTC) — 장 마감(15:30) 1시간 후
+  US  : 평일 07:00 KST 다음날 (22:00 UTC) — 미국 장 마감(16:00 ET) 2시간 후
+
+[수동 실행 (workflow_dispatch) 날짜 기준]
+  KRX : 16:00 KST (07:00 UTC) 이전 실행 시 → 전날 데이터 수집
+        16:00 KST 이후 실행 시 → 오늘 데이터 수집
+  US  : 06:30 KST 다음날 (21:30 UTC) 이전 실행 시 → 전날 데이터 수집
+        06:30 KST 이후 실행 시 → 오늘 데이터 수집
+
+[KRX 인증 방식]
+  pykrx가 os.environ["KRX_ID"], os.environ["KRX_PW"]를 자동으로 읽어
+  KRX 정보데이터시스템에 로그인 세션을 맺음.
+  → GitHub Secrets에 KRX_ID, KRX_PW 등록 필수
+  → 해외 IP(GitHub Actions 서버)에서도 로그인 후 정상 수집 가능
+
+[중복 실행 방지]
+  Turso daily_log 테이블에 완료된 마켓/청크를 기록.
+  재실행 시 이미 완료된 항목은 skip → Turso write 한도 절약.
+
+[필요한 GitHub Secrets]
+  TURSO_DATABASE_URL, TURSO_AUTH_TOKEN, KRX_ID, KRX_PW
+
+[유의사항]
+  - pykrx는 KRX 비공식 스크래핑 라이브러리. 과도한 호출 시 IP 차단 가능.
+  - 자동 실행은 장 마감 후에만 돌도록 스케줄 유지할 것.
+  - Turso free tier write 한도 주의 (청크 단위 upsert로 최소화함).
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
+import os
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+# ── KRX 인증: pykrx가 이 환경변수를 자동으로 읽어 로그인 세션을 맺음 ──
+_krx_id = os.environ.get("KRX_ID", "").strip()
+_krx_pw = os.environ.get("KRX_PW", "").strip()
+if not _krx_id or not _krx_pw:
+    print("KRX 로그인 실패: KRX_ID 또는 KRX_PW 환경 변수가 설정되지 않았습니다.")
+else:
+    os.environ["KRX_ID"] = _krx_id
+    os.environ["KRX_PW"] = _krx_pw
 
 from collectors.krx_collector import fetch_ohlcv, _fetch_ticker_name_map, MARKETS
 from collectors.us_collector import _download_chunk, _parse_chunk
@@ -18,6 +56,40 @@ from db.turso_migrate import get_turso_conn, CHUNK_SIZE, init_turso
 from utils.helpers import random_delay, Progress
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_dates():
+    """
+    수동 실행(workflow_dispatch) 시 현재 UTC 시각 기준으로
+    KRX / US 각각 오늘 vs 전날 데이터 여부를 결정.
+
+    자동 실행(schedule)이면 스케줄 자체가 장 마감 후이므로 항상 오늘 날짜 사용.
+    """
+    event = os.environ.get("GITHUB_EVENT_NAME", "schedule")
+    utc_now = datetime.now(timezone.utc)
+    hour = int(os.environ.get("RUN_HOUR_UTC", utc_now.hour))
+    minute = int(os.environ.get("RUN_MINUTE_UTC", utc_now.minute))
+    total_minutes = hour * 60 + minute
+
+    # KRX 기준: 자동실행 30분 전 = 07:00 UTC = 420분
+    KRX_CUTOFF = 7 * 60       # 07:00 UTC
+    # US 기준: 자동실행 30분 전 = 21:30 UTC = 1290분
+    US_CUTOFF  = 21 * 60 + 30 # 21:30 UTC
+
+    if event == "workflow_dispatch":
+        krx_base = utc_now - timedelta(days=1) if total_minutes < KRX_CUTOFF else utc_now
+        us_base  = utc_now - timedelta(days=1) if total_minutes < US_CUTOFF  else utc_now
+        logger.info(f"[수동실행] UTC {hour:02d}:{minute:02d} | KRX기준={krx_base.strftime('%Y-%m-%d')} | US기준={us_base.strftime('%Y-%m-%d')}")
+    else:
+        krx_base = utc_now
+        us_base  = utc_now
+        logger.info(f"[자동실행] UTC {hour:02d}:{minute:02d}")
+
+    krx_date      = krx_base.strftime("%Y%m%d")
+    yf_date_start = (us_base - timedelta(days=2)).strftime("%Y-%m-%d")
+    yf_date_end   = us_base.strftime("%Y-%m-%d")
+
+    return krx_date, yf_date_start, yf_date_end
 
 
 def _init_daily_log(turso):
@@ -74,11 +146,7 @@ def _upsert_stocks(turso, rows: list[tuple]):
 
 
 def run_daily():
-    today = datetime.today()
-
-    krx_date      = today.strftime("%Y%m%d")
-    yf_date_start = (today - timedelta(days=2)).strftime("%Y-%m-%d")
-    yf_date_end   = today.strftime("%Y-%m-%d")
+    krx_date, yf_date_start, yf_date_end = _resolve_dates()
 
     turso = get_turso_conn()
     try:
