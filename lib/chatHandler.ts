@@ -9,6 +9,7 @@ export type ChatHandlerOptions = {
 export type ExampleItem = {
   speaker: string
   sentence: string
+  translation?: string
   type?: 'example' | 'output_prompt'
 }
 
@@ -79,6 +80,7 @@ export function parseExampleResponse(raw: string) {
         .map((item: any) => ({
           speaker: String(item.speaker || item.role || 'Example'),
           sentence: String(item.sentence ?? item.text ?? ''),
+          translation: item.translation ? String(item.translation) : undefined,
           type: item.type === 'output_prompt' ? 'output_prompt' : 'example',
         }))
         .filter((item: ExampleItem) => item.sentence)

@@ -6,6 +6,7 @@ import { speakText, speakWithGroq, startListening, stopListening, type TTSLangua
 export type Message = {
   role: 'user' | 'assistant'
   content: string
+  translation?: string
   type?: 'text' | 'example' | 'output_prompt'
   speaker?: string
   speakerIndex?: number
@@ -74,6 +75,7 @@ export default function ChatWindow({
   const [useWhisper, setUseWhisper] = useState(true)
   const [showUndoButton, setShowUndoButton] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const audioCacheRef = useRef<Map<string, string>>(new Map()) // cacheKey → objectURL
 
   useEffect(() => {
     if (initialMessages && initialMessages.length > 0) {
@@ -93,7 +95,33 @@ export default function ChatWindow({
     setSpeaking(true)
     try {
       if (selectedMode === 'groq') {
-        await speakWithGroq(text, speakerIndex, groqStyle)
+        const cacheKey = `${text}__${groqStyle}`
+        const cached = audioCacheRef.current.get(cacheKey)
+        if (cached) {
+          await new Promise<void>((resolve, reject) => {
+            const audio = new Audio(cached)
+            audio.onended = () => resolve()
+            audio.onerror = () => reject(new Error('Audio 재생 실패'))
+            audio.play()
+          })
+        } else {
+          // API 호출 후 objectURL 캐싱
+          const res = await fetch('/api/tts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, speakerIndex, style: groqStyle }),
+          })
+          if (!res.ok) throw new Error('Groq TTS 호출 실패')
+          const blob = await res.blob()
+          const url = URL.createObjectURL(blob)
+          audioCacheRef.current.set(cacheKey, url)
+          await new Promise<void>((resolve, reject) => {
+            const audio = new Audio(url)
+            audio.onended = () => resolve()
+            audio.onerror = () => reject(new Error('Audio 재생 실패'))
+            audio.play()
+          })
+        }
       } else {
         await speakText(text, selectedLang, selectedMode as number, speakerIndex)
       }
@@ -161,7 +189,7 @@ export default function ChatWindow({
           const speakerIndex = rawSpeaker ? speakerList.indexOf(rawSpeaker) : undefined
           const speakerLabel = speakerIndex !== undefined ? String.fromCharCode(65 + speakerIndex) : undefined
           const msgType: Message['type'] = item.type === 'output_prompt' ? 'output_prompt' : 'example'
-          nextMessages.push({ role: 'assistant', content: text, type: msgType, speaker: speakerLabel, speakerIndex })
+          nextMessages.push({ role: 'assistant', content: text, translation: item.translation ?? undefined, type: msgType, speaker: speakerLabel, speakerIndex })
         })
       } else {
         nextMessages.push({ role: 'assistant', content, type: 'text' })
@@ -361,6 +389,12 @@ export default function ChatWindow({
                   >
                     🔊
                   </button>
+                )}
+                {/* 한글 번역 */}
+                {isExample && msg.translation && (
+                  <div className="mt-1 text-xs text-[#666]">
+                    {msg.translation}
+                  </div>
                 )}
                 {/* 아웃풋 프롬프트에만 🎙 버튼 */}
                 {isOutputPrompt && showLanguageSelector && (

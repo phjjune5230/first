@@ -190,12 +190,16 @@ ${learnedExpressions.length > 0 ? learnedExpressions.slice(-20).join(', ') : '�
 {
   "text": "설명, 안내, 피드백 텍스트",
   "examples": [
-    { "speaker": "John", "sentence": "예문", "type": "example" },
-    { "speaker": "Sarah", "sentence": "예문", "type": "example" }
+    { "speaker": "John", "sentence": "예문", "translation": "한국어 뉘앙스 설명", "type": "example" },
+    { "speaker": "Sarah", "sentence": "예문", "translation": "한국어 뉘앙스 설명", "type": "example" }
   ]
 }
 예문/상황극은 examples에, 설명/안내/피드백은 text에 담아.
 예문이 없으면 examples는 빈 배열로.
+
+translation 규칙:
+- 단순 직역 말고, 실제 쓰이는 뉘앙스/상황 중심으로 한국어로 설명 (예: "거절할 때 부드럽게 쓰는 표현")
+- output_prompt 타입은 translation 생략 가능
 
 type 규칙:
 - 1단계(예문 인풋), 2단계(상황극 인풋): "type": "example"
