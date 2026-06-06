@@ -1,29 +1,12 @@
 name: Stock Daily Collector
 
-# ──────────────────────────────────────────────────────────────
-# 자동 실행 스케줄 (UTC 기준):
-#   KRX  자동: 07:30 UTC = 16:30 KST (장 마감 1시간 후)
-#   US   자동: 22:00 UTC = 07:00 KST 다음날 (미국 장 마감 2시간 후)
-#
-# 수동 실행 (workflow_dispatch) 기준:
-#   KRX  자동 실행 30분 전인 07:00 UTC (16:00 KST) 이전 수동 실행 시 → 전날 데이터
-#   US   자동 실행 30분 전인 21:30 UTC 이전 수동 실행 시 → 전날 데이터
-#   → daily_update.py 내부에서 GITHUB_EVENT_NAME, RUN_HOUR_UTC, RUN_MINUTE_UTC 환경변수로 판단
-#
-# GitHub Secrets 필요 목록:
-#   TURSO_DATABASE_URL  : Turso DB URL
-#   TURSO_AUTH_TOKEN    : Turso 인증 토큰
-#   KRX_ID              : KRX 정보데이터시스템 로그인 ID
-#   KRX_PW              : KRX 정보데이터시스템 로그인 PW
-# ──────────────────────────────────────────────────────────────
-
 on:
   schedule:
     # KRX 마감 (15:30 KST) + 1h = 16:30 KST = 07:30 UTC
     - cron: '30 7 * * 1-5'
     # 미국 마감 (16:00 ET) + 2h = 22:00 UTC
     - cron: '0 22 * * 1-5'
-  workflow_dispatch:  # 수동 실행 가능
+  workflow_dispatch:
 
 jobs:
   collect:
@@ -55,6 +38,7 @@ jobs:
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
           KRX_ID: ${{ secrets.KRX_ID }}
           KRX_PW: ${{ secrets.KRX_PW }}
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: |
           export RUN_HOUR_UTC=$(date -u +%H)
