@@ -11,6 +11,7 @@ const features = [
   { id: 'stock', label: '주식 비서', desc: '종목 분석 · 뉴스 요약 · 포트폴리오', path: '/stock' },
   { id: 'assistant', label: '개인 비서', desc: '목표 관리 · 일정 추적', path: '/assistant' },
   { id: 'smalltalk', label: '잡담', desc: '가볍게 수다 떨기', path: '/smalltalk' },
+  { id: 'codebot', label: '코드봇', desc: '코드 수정 · 자동 커밋 · 롤백', path: '/codebot' },
 ]
 
 export default function Home() {

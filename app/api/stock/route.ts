@@ -101,9 +101,13 @@ export async function POST(req: NextRequest) {
   try {
     const userQuestion = messages[messages.length - 1]?.content ?? ''
 
-    // 1단계: SQL + display 결정
+    // 1단계: SQL + display 결정 (멀티턴 맥락 포함 — 최근 6개 메시지)
+    const recentMessages = messages.slice(-6).map((m: { role: string; content: string }) => ({
+      role: m.role as 'user' | 'assistant',
+      content: m.content,
+    }))
     const sqlResult = await callStockSQLLLM(
-      [{ role: 'user', content: userQuestion }],
+      recentMessages,
       SQL_SYSTEM_PROMPT
     )
 

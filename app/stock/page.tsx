@@ -238,13 +238,15 @@ function StockTable({ rows }: { rows: any[] }) {
   if (!rows.length) return null
   const cols = Object.keys(rows[0])
 
+  // market 컬럼으로 통화 판단, 없으면 첫 행 market 값 참조
+  const isKrw = ['KOSPI', 'KOSDAQ'].includes(rows[0]?.market ?? '')
+
   function formatCell(key: string, val: any): string {
     if (val === null || val === undefined) return '-'
     if (key === 'volume') return Number(val).toLocaleString()
     if (['open', 'high', 'low', 'close'].includes(key)) {
       const n = Number(val)
-      // 한국 주식 (원화) vs 미국 주식 (달러) 구분 — close > 1000이면 원화로 간주
-      return n > 1000 ? n.toLocaleString() + '원' : '$' + n.toFixed(2)
+      return isKrw ? n.toLocaleString() + '원' : '$' + n.toFixed(2)
     }
     return String(val)
   }
@@ -303,7 +305,7 @@ function StockChart({ rows }: { rows: any[] }) {
   // y축 레이블: 4개
   const yTicks = [0, 0.33, 0.66, 1].map(t => minV + t * range)
 
-  const isKrw = maxV > 1000
+  const isKrw = ['KOSPI', 'KOSDAQ'].includes(sorted[0]?.market ?? '')
 
   return (
     <div className="border border-[#222] rounded p-2 bg-[#0a0a0a]">
