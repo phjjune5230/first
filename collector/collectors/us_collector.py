@@ -33,8 +33,10 @@ def fetch_grouped_daily(date: str) -> list[dict] | None:
         date = f"{date[:4]}-{date[4:6]}-{date[6:]}"
 
     url = f"{POLYGON_BASE_URL}/v2/aggs/grouped/locale/us/market/stocks/{date}"
+    logger.info(f"[Polygon] 요청 URL: {url}")
+    logger.info(f"[Polygon] API 키 앞 4자리: {POLYGON_API_KEY[:4] if POLYGON_API_KEY else '없음'}")
     resp = requests.get(url, params={"adjusted": "true", "apiKey": POLYGON_API_KEY}, timeout=30)
-
+    logger.info(f"[Polygon] 응답 코드: {resp.status_code}")
     if resp.status_code == 403:
         logger.error("[Polygon] API 키 인증 실패 (403)")
         return None
