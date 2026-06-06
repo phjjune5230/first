@@ -47,8 +47,10 @@ const SQL_SYSTEM_PROMPT = `너는 주식 데이터 SQL 전문가야. 사용자 �
   "ask"        → 데이터는 있는데 표현 방식이 애매한 경우 (사용자에게 물어봄)
 - SELECT만 사용, LIMIT 최대 100
 - 날짜는 오늘 기준 계산 (오늘: ${new Date().toISOString().split('T')[0]})
-- 최근 1개월: date >= date('now', '-1 month')
-- 최근 1주일: date >= date('now', '-7 days')
+- date 컬럼은 'YYYYMMDD' 형식 문자열 (예: '20260401')
+- 특정 월: date >= '20260401' AND date <= '20260430'
+- 최근 1개월: date >= strftime('%Y%m%d', date('now', '-1 month'))
+- 최근 1주일: date >= strftime('%Y%m%d', date('now', '-7 days'))
 - 데이터로 답할 수 없는 질문이면: { "sql": null, "explainable": false, "display": "chat" }`
 
 // ── 3단계: 데이터 → 자연어 답변 프롬프트 ──────────
@@ -153,9 +155,9 @@ export async function POST(req: NextRequest) {
     let rows: any[] = []
     try {
       const rs = await client.execute(parsed.sql)
-      rows = rs.rows.map(row => {
+      rows = rs.rows.map((row: any) => {
         const obj: Record<string, any> = {}
-        rs.columns.forEach((col, i) => { obj[col] = row[i] })
+        rs.columns.forEach((col: string, i: number) => { obj[col] = row[i] })
         return obj
       })
     } finally {
