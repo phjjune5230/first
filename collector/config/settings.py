@@ -39,3 +39,7 @@ YF_CHUNK_SIZE = 200   # 한 번에 요청할 티커 수
 # ── retry ─────────────────────────────────────────
 MAX_RETRY     = 3
 RETRY_BACKOFF = 5     # retry 간격(초) — 매 retry마다 누적
+
+# ── Polygon.io ────────────────────────────────────
+POLYGON_API_KEY  = os.getenv("POLYGON_API_KEY", "")
+POLYGON_BASE_URL = "https://api.polygon.io"

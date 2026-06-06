@@ -1,20 +1,12 @@
 """
 daily_update.py 로컬 테스트용 스크립트
 
-GitHub Actions 환경변수를 직접 지정해서 로컬에서 실행합니다.
-
 사용법:
-  # KRX만 테스트 (오늘 날짜)
   python test_daily.py --market krx
-
-  # US만 테스트 (오늘 날짜)
   python test_daily.py --market us
-
-  # 전체 테스트 (KRX + US)
   python test_daily.py --market all
-
-  # 특정 날짜로 테스트 (평일이어야 함)
   python test_daily.py --market krx --date 20260604
+  python test_daily.py --market us  --date 20260604 --force
 
 옵션:
   --market  krx | us | all  (필수)
@@ -26,13 +18,11 @@ import argparse
 import logging
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# .env 로드
 from dotenv import load_dotenv
 load_dotenv()
 
-# 로깅 설정
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
@@ -44,39 +34,21 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def _set_env(market: str, date_str: str):
-    """GitHub Actions에서 주입되는 환경변수를 로컬에서 직접 설정"""
-
-    dt = datetime.strptime(date_str, "%Y%m%d")
-    hour_utc = 8   # KRX 기본값 (07:30 UTC 스케줄 근처)
-
-    if market == "us":
-        hour_utc = 22  # US 스케줄 (22:00 UTC)
-
-    os.environ["GITHUB_EVENT_NAME"] = "workflow_dispatch"
-    os.environ["RUN_HOUR_UTC"]      = str(hour_utc)
-    os.environ["RUN_MINUTE_UTC"]    = "00"
-
-    logger.info(f"[env] GITHUB_EVENT_NAME=workflow_dispatch")
-    logger.info(f"[env] RUN_HOUR_UTC={hour_utc}, RUN_MINUTE_UTC=00")
-
-
-def _check_env():
-    """필수 환경변수 확인"""
+def _check_env(market: str):
     missing = []
-    if not os.getenv("TURSO_DATABASE_URL"):
-        missing.append("TURSO_DATABASE_URL")
-    if not os.getenv("TURSO_AUTH_TOKEN"):
-        missing.append("TURSO_AUTH_TOKEN")
+    for key in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN"):
+        if not os.getenv(key):
+            missing.append(key)
+    if market in ("us", "all") and not os.getenv("POLYGON_API_KEY"):
+        missing.append("POLYGON_API_KEY")
     if missing:
         logger.error(f"필수 환경변수 없음: {', '.join(missing)}")
-        logger.error(".env 파일에 추가해주세요.")
         sys.exit(1)
 
 
 def run_krx(date_str: str, force: bool = False):
     """KRX 증분 수집 테스트"""
-    from collectors.krx_collector import fetch_ohlcv, _fetch_ticker_name_map, MARKETS
+    from collectors.krx_collector import fetch_ohlcv, _fetch_ticker_name_map, MARKETS, _COL_MAP, _REQUIRED_COLS
     from db.turso_migrate import get_turso_conn, init_turso
     from daily_update import _init_daily_log, _is_done, _mark_done, _upsert_prices, _upsert_stocks
     from utils.helpers import random_delay
@@ -88,10 +60,8 @@ def run_krx(date_str: str, force: bool = False):
         _init_daily_log(turso)
 
         for market in MARKETS:
-            label = date_str
-
-            if not force and _is_done(turso, market, label):
-                logger.info(f"[skip] {market} {date_str} 이미 완료 (--force 옵션으로 재수집 가능)")
+            if not force and _is_done(turso, market, date_str):
+                logger.info(f"[skip] {market} {date_str} 이미 완료 (--force로 재수집 가능)")
                 continue
 
             logger.info(f"[수집] {market} {date_str}")
@@ -111,11 +81,8 @@ def run_krx(date_str: str, force: bool = False):
 
             _upsert_stocks(turso, [(t, n, market) for t, n in ticker_map.items()])
 
-            df = df.rename(columns={
-                "시가": "open", "고가": "high", "저가": "low",
-                "종가": "close", "거래량": "volume"
-            })
-            df = df[["open", "high", "low", "close", "volume"]].copy()
+            df = df.rename(columns=_COL_MAP)
+            df = df[_REQUIRED_COLS].copy()
             df = df[df["volume"] > 0].dropna(subset=["close"])
 
             rows = [
@@ -125,7 +92,7 @@ def run_krx(date_str: str, force: bool = False):
             ]
             _upsert_prices(turso, rows, market, date_str)
             if not force:
-                _mark_done(turso, market, label)
+                _mark_done(turso, market, date_str)
             logger.info(f"[완료] {market} {date_str} | {len(rows)}개 저장")
 
     finally:
@@ -133,62 +100,38 @@ def run_krx(date_str: str, force: bool = False):
 
 
 def run_us(date_str: str, force: bool = False):
-    """US 증분 수집 테스트"""
-    from collectors.us_collector import _download_chunk, _parse_chunk
-    from collectors.nasdaq_tickers import fetch_nasdaq_tickers
-    from collectors.nyse_tickers import fetch_nyse_tickers
-    from db.turso_migrate import get_turso_conn, init_turso, CHUNK_SIZE
-    from daily_update import _init_daily_log, _is_done, _mark_done, _upsert_prices, _upsert_stocks
-    from utils.helpers import random_delay
-    from config.settings import YF_CHUNK_SIZE
+    """US 증분 수집 테스트 (Polygon Grouped Daily — 1회 호출)"""
+    from collectors.us_collector import fetch_grouped_daily, _parse_grouped
+    from db.turso_migrate import get_turso_conn, init_turso
+    from daily_update import _init_daily_log, _is_done, _mark_done, _upsert_prices
 
-    dt = datetime.strptime(date_str, "%Y%m%d")
-    yf_start = (dt - timedelta(days=2)).strftime("%Y-%m-%d")
-    yf_end   = dt.strftime("%Y-%m-%d")
+    poly_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+    us_label  = f"POLYGON_{poly_date}"
 
-    logger.info(f"=== US 테스트 시작: {yf_start} ~ {yf_end} ===")
+    logger.info(f"=== US 테스트 시작 (Polygon): {poly_date} ===")
     turso = get_turso_conn()
     try:
         init_turso(turso)
         _init_daily_log(turso)
 
-        us_markets = {
-            "NASDAQ": fetch_nasdaq_tickers(),
-            "NYSE":   fetch_nyse_tickers(),
-        }
+        if not force and _is_done(turso, "US_POLYGON", us_label):
+            logger.info(f"[skip] US {poly_date} 이미 완료 (--force로 재수집 가능)")
+            return
 
-        for market, ticker_list in us_markets.items():
-            if not ticker_list:
-                logger.error(f"[{market}] 종목 리스트 취득 실패")
-                continue
+        results = fetch_grouped_daily(poly_date)
 
-            _upsert_stocks(turso, [(sym, name, market) for sym, name in ticker_list])
-            symbols = [t[0] for t in ticker_list]
-            chunks  = list(range(0, len(symbols), YF_CHUNK_SIZE))
+        if results is None:
+            logger.error(f"[error] US {poly_date} Polygon API 오류")
+            return
+        if not results:
+            logger.info(f"[empty] US {poly_date} — 휴장일 또는 데이터 없음")
+            return
 
-            logger.info(f"[{market}] 총 {len(symbols)}개 종목, {len(chunks)}개 청크")
-
-            for idx, i in enumerate(chunks):
-                chunk       = symbols[i : i + YF_CHUNK_SIZE]
-                chunk_label = f"DAILY_{market}_chunk_{idx+1}_{yf_start}"
-
-                if not force and _is_done(turso, market, chunk_label):
-                    logger.info(f"[skip] {chunk_label}")
-                    continue
-
-                logger.info(f"[{market}] 청크 {idx+1}/{len(chunks)} 수집 중...")
-                df = _download_chunk(chunk, yf_start, yf_end)
-                random_delay()
-
-                if df is None or df.empty:
-                    logger.warning(f"[empty] {market} 청크 {idx+1}")
-                    continue
-
-                rows = _parse_chunk(df, chunk, market)
-                _upsert_prices(turso, rows, market, yf_start)
-                if not force:
-                    _mark_done(turso, market, chunk_label)
-                logger.info(f"[완료] {market} 청크 {idx+1} | {len(rows)}개")
+        rows = _parse_grouped(results, "US", poly_date)
+        _upsert_prices(turso, rows, "US_POLYGON", poly_date)
+        if not force:
+            _mark_done(turso, "US_POLYGON", us_label)
+        logger.info(f"[완료] US {poly_date} | {len(rows)}개 저장")
 
     finally:
         turso.close()
@@ -196,17 +139,14 @@ def run_us(date_str: str, force: bool = False):
 
 def main():
     parser = argparse.ArgumentParser(description="daily_update 로컬 테스트")
-    parser.add_argument("--market", choices=["krx", "us", "all"], required=True,
-                        help="수집 대상 (krx | us | all)")
+    parser.add_argument("--market", choices=["krx", "us", "all"], required=True)
     parser.add_argument("--date",   default=datetime.today().strftime("%Y%m%d"),
                         help="수집 날짜 YYYYMMDD (기본: 오늘)")
     parser.add_argument("--force",  action="store_true",
                         help="이미 완료된 날짜도 재수집")
     args = parser.parse_args()
 
-    _check_env()
-    _set_env(args.market, args.date)
-
+    _check_env(args.market)
     logger.info(f"테스트 날짜: {args.date}, 대상: {args.market}, force: {args.force}")
 
     if args.market in ("krx", "all"):
