@@ -49,6 +49,9 @@ def init_turso(turso):
             PRIMARY KEY (ticker, market, date)
         )
     """)
+    turso.execute("CREATE INDEX IF NOT EXISTS idx_prices_ticker_date ON stock_prices(ticker, date)")
+    turso.execute("CREATE INDEX IF NOT EXISTS idx_prices_market_date ON stock_prices(market, date)")
+    turso.execute("CREATE INDEX IF NOT EXISTS idx_stocks_name ON stocks(name)")
     turso.commit()
     logger.info("Turso 테이블 준비 완료")
 

@@ -19,6 +19,24 @@ logger = logging.getLogger(__name__)
 
 MARKETS = ["KOSPI", "KOSDAQ"]
 
+# pykrx 버전에 따라 컬럼명이 한글(구버전) 또는 영문(신버전)으로 다르게 반환됨.
+# 두 케이스를 모두 커버하는 매핑 테이블.
+_COL_MAP = {
+    # 한글 컬럼명 (pykrx 구버전)
+    "시가":  "open",
+    "고가":  "high",
+    "저가":  "low",
+    "종가":  "close",
+    "거래량": "volume",
+    # 영문 컬럼명 (pykrx 신버전)
+    "Open":   "open",
+    "High":   "high",
+    "Low":    "low",
+    "Close":  "close",
+    "Volume": "volume",
+}
+_REQUIRED_COLS = ["open", "high", "low", "close", "volume"]
+
 
 def get_business_days(start: str, end: str) -> list[str]:
     """영업일 목록 생성 (pykrx로 실제 거래일만 추출)"""
@@ -48,6 +66,26 @@ def _fetch_ticker_name_map(market: str, date: str) -> dict | None:
 def fetch_ohlcv(date: str, market: str) -> pd.DataFrame:
     """해당 날짜 전종목 OHLCV (수정주가 기준)"""
     return stock.get_market_ohlcv(date, market=market)
+
+
+def _normalize_columns(df: pd.DataFrame, market: str, date: str) -> pd.DataFrame | None:
+    """
+    pykrx 버전 차이로 인한 컬럼명 불일치를 정규화.
+
+    - 한글/영문 컬럼명 모두 소문자 표준명(open/high/low/close/volume)으로 변환
+    - 변환 후에도 필수 컬럼이 누락되면 None 반환 (실제 컬럼명을 로그에 기록)
+    """
+    df = df.rename(columns=_COL_MAP)
+
+    missing = [c for c in _REQUIRED_COLS if c not in df.columns]
+    if missing:
+        logger.warning(
+            f"[컬럼 누락] {market} {date} → 누락: {missing} | "
+            f"실제 컬럼: {df.columns.tolist()}"
+        )
+        return None
+
+    return df
 
 
 def collect_krx():
@@ -99,30 +137,29 @@ def collect_krx():
                 prog.fail_step("빈 데이터")
                 continue
 
-            # ── 컬럼 정리 ────────────────────────────
-            df = df.rename(columns={
-                "시가": "open",
-                "고가": "high",
-                "저가": "low",
-                "종가": "close",
-                "거래량": "volume",
-            })
-            missing = [c for c in ["open", "high", "low", "close", "volume"] if c not in df.columns]
-            if missing:
-                logger.warning(f"[컬럼 누락] {market} {date} → {missing}, 실제: {df.columns.tolist()}")
+            # ── 컬럼 정규화 (한글/영문 버전 대응) ──────────────
+            df = _normalize_columns(df, market, date)
+            if df is None:
                 log_status(market, date, "skipped", 0)
                 prog.fail_step("컬럼 누락")
                 continue
 
             df.index.name = "ticker"
-            df = df[["open", "high", "low", "close", "volume"]].copy()
+            df = df[_REQUIRED_COLS].copy()
             df = df[df["volume"] > 0]       # 거래정지 종목 제외
             df = df.dropna(subset=["close"])
+
+            # ── 숫자 타입 보장 (문자열로 들어오는 케이스 방어) ──
+            for col in ["open", "high", "low", "close"]:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            df["volume"] = pd.to_numeric(df["volume"], errors="coerce").fillna(0).astype(int)
+            df = df.dropna(subset=["open", "high", "low", "close"])
 
             # ── DB 저장 ──────────────────────────────
             rows = [
                 (str(ticker).zfill(6), market, date,
-                 row["open"], row["high"], row["low"], row["close"], int(row["volume"]))
+                 int(row["open"]), int(row["high"]), int(row["low"]), int(row["close"]),
+                 int(row["volume"]))
                 for ticker, row in df.iterrows()
             ]
             saved = insert_prices(rows)
