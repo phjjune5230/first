@@ -1,12 +1,12 @@
 """
 증분 수집 - 매일 장 마감 후 실행 (스케줄러용)
 - KRX : 오늘 날짜 전종목 OHLCV
-- US  : Polygon Grouped Daily → 1회 API 호출로 전종목 수집
+- US  : Polygon Grouped Daily → 전날 데이터 1회 API 호출로 전종목 수집
 - 중복 실행 방지: Turso daily_log 테이블로 완료 여부 영속화
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from db.turso_migrate import get_turso_conn, init_turso
 from utils.helpers import random_delay, Progress
@@ -71,8 +71,9 @@ def _upsert_stocks(turso, rows: list[tuple]):
 
 def run_daily():
     today     = datetime.today()
+    yesterday = today - timedelta(days=1)
     krx_date  = today.strftime("%Y%m%d")
-    poly_date = today.strftime("%Y-%m-%d")
+    poly_date = yesterday.strftime("%Y-%m-%d")
 
     turso = get_turso_conn()
     try:
@@ -134,7 +135,7 @@ def run_daily():
 
         krx_prog.finish()
 
-        # ── 미국 증분 (Polygon Grouped Daily 1회 호출) ──
+        # ── 미국 증분 (Polygon Grouped Daily — 전날 데이터) ──
         from collectors.us_collector import fetch_grouped_daily, _parse_grouped
 
         us_label = f"POLYGON_{poly_date}"

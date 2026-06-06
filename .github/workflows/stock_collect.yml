@@ -2,10 +2,10 @@ name: Stock Daily Collector
 
 on:
   schedule:
-    # KRX 마감 (15:30 KST) + 1h = 16:30 KST = 07:30 UTC
+    # KRX 마감 후 수집: 16:30 KST = 07:30 UTC
     - cron: '30 7 * * 1-5'
-    # 미국 마감 (16:00 ET) + 2h = 22:00 UTC
-    - cron: '0 22 * * 1-5'
+    # US 전날 데이터 수집: 09:10 KST = 00:10 UTC (화~토)
+    - cron: '10 0 * * 2-6'
   workflow_dispatch:
 
 jobs:
