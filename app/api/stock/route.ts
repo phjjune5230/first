@@ -57,7 +57,7 @@ market 값: 'KOSPI', 'KOSDAQ', 'NASDAQ', 'NYSE'
   ORDER BY sp.date ASC
   LIMIT 100
 
-반환 형식:
+반환 형식 (json):
   { "sql": "...", "explainable": true, "display": "chat", "tickerNames": ["삼성전자"] }
 - tickerNames: 질문에서 추출한 종목명 배열 (없으면 [])
 - display 값 결정:
