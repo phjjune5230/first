@@ -40,44 +40,42 @@ const SQL_SYSTEM_PROMPT = `너는 주식 데이터 SQL 전문가야. 사용자 �
 market 값: 'KOSPI', 'KOSDAQ', 'NASDAQ', 'NYSE'
 
 질문에서 반드시 아래 3가지를 추출해:
-1. 종목명: KOSPI/KOSDAQ 종목은 한국어 공식명 기준으로 정규화 (예: 엘지전자→LG전자, 삼성전자우선주→삼성전자우)
-             NASDAQ/NYSE 종목은 영어 공식명 또는 티커 기준으로 정규화 (예: 애플→Apple, 구글→Alphabet)
-2. 기간: 명시 없으면 최근 1개월 기본값 사용
+1. 종목명: KOSPI/KOSDAQ/NASDAQ/NYSE 상장 공식명 기준으로 정규화
+2. 기간: 반드시 명시되어야 함. 명시 없으면 display를 "ask"로 설정하고 sql은 null
 3. 원하는 정보: 종가/시가/거래량/OHLCV 등, 명시 없으면 close 기준
 
-종목명으로 검색할 때는 반드시 stocks 테이블과 JOIN:
+종목명 검색 전략 (반드시 이 순서로):
+1단계 - 정확 매칭 우선: WHERE s.name = '삼성전자'
+2단계 - 정확 매칭 결과가 없을 때만 LIKE 사용하고 display를 "confirm"으로 설정: WHERE s.name LIKE '%삼성%'
+
+예시 SQL:
   SELECT sp.ticker, sp.market, sp.date, sp.close
   FROM stock_prices sp
   JOIN stocks s ON sp.ticker = s.ticker AND sp.market = s.market
-  WHERE s.name LIKE '%LG전자%'
-  AND sp.date >= strftime('%Y%m%d', date('now', '-1 month'))
+  WHERE s.name = '삼성전자'
+  AND sp.date >= '20260501' AND sp.date <= '20260531'
   ORDER BY sp.date ASC
   LIMIT 100
 
-규칙:
-- 반드시 JSON만 반환 (다른 텍스트 없이):
-  { "sql": "...", "explainable": true, "display": "chat", "tickerNames": ["LG전자"] }
-- tickerNames: 질문에서 추출한 종목명 배열 (종목 검색 쿼리일 때만, 없으면 [])
+반환 형식:
+  { "sql": "...", "explainable": true, "display": "chat", "tickerNames": ["삼성전자"] }
+- tickerNames: 질문에서 추출한 종목명 배열 (없으면 [])
 - display 값 결정:
   "chat"       → 단순 사실 질문 (종가 하나, 특정 날짜 1개 값 등)
   "table"      → 여러 행 데이터 (기간별 주가, 순위, 비교 등)
   "table+chart"→ 시계열 데이터 (1주일 이상 기간, 추세 파악용)
-  "ask"        → 데이터는 있는데 표현 방식이 애매한 경우 (사용자에게 물어봄)
+  "ask"        → 기간이 명시되지 않은 경우
+  "confirm"    → 정확 매칭 종목 없어서 LIKE로 후보 찾은 경우
 - SELECT 결과에 반드시 sp.market 컬럼 포함 (통화 표기에 필수)
 - SELECT만 사용, LIMIT 최대 100
 - 오늘: ${todayYYYYMMDD()} (YYYYMMDD 형식)
-- date 컬럼은 'YYYYMMDD' 형식 문자열 (예: '20260601')
+- date 컬럼은 'YYYYMMDD' 형식 문자열
 
-날짜 함수 규칙 (SQLite 전용 — MySQL 함수 절대 사용 금지):
-- month(), year(), day() 사용 금지
-- 특정 월 필터: substr(date,1,6) = '202605'
-- 특정 연도 필터: substr(date,1,4) = '2026'
-- 날짜 비교는 문자열 비교: date >= '20260101'
-- 최근 1개월: date >= strftime('%Y%m%d', date('now', '-1 month'))
-- 최근 1주일: date >= strftime('%Y%m%d', date('now', '-7 days'))
-- 최근 1년: date >= strftime('%Y%m%d', date('now', '-1 year'))
-- strftime에 date 컬럼 직접 사용 금지 (YYYYMMDD 문자열이라 파싱 안 됨)
-- 요일 필터 사용 금지
+날짜 규칙:
+- 날짜 조건은 반드시 YYYYMMDD 문자열 리터럴로 직접 계산해서 사용
+- "5월 둘째주" → sp.date >= '20260512' AND sp.date <= '20260518'
+- "5월" → substr(sp.date,1,6) = '202605'
+- strftime, month(), year(), day() 등 함수 사용 금지
 
 - 데이터로 답할 수 없는 질문이면: { "sql": null, "explainable": false, "display": "chat", "tickerNames": [] }`
 
@@ -164,16 +162,34 @@ export async function POST(req: NextRequest) {
       parsed = { sql: null, explainable: false, display: 'chat', tickerNames: [] }
     }
 
-    // display === 'ask': 표현 방식 사용자에게 확인
+    // display === 'ask': 기간 미입력 시 사용자에게 기간 질문
     if (parsed.display === 'ask') {
       return NextResponse.json({
-        content: '어떻게 보여드릴까요?',
+        content: '조회할 기간을 말씀해주세요. (예: 5월, 최근 1주일, 2026년 1분기)',
         display: 'ask',
-        displayOptions: ['채팅', '테이블', '그래프'],
         provider: validProvider,
         availableProviders: ALL_PROVIDERS,
         dataSource: 'ask',
-        pendingSql: parsed.sql,
+      })
+    }
+
+    // display === 'confirm': 정확 매칭 실패, LIKE 후보 종목 컨펌 요청
+    if (parsed.display === 'confirm' && parsed.sql) {
+      validateSQL(parsed.sql)
+      const client = getTursoClient()
+      let candidates: string[] = []
+      try {
+        const rs = await client.execute(parsed.sql)
+        candidates = [...new Set(rs.rows.map((r: any) => `${r[0]} (${r[2]})`))] // name (market)
+      } finally {
+        client.close()
+      }
+      return NextResponse.json({
+        content: `"${parsed.tickerNames?.[0]}"에 해당하는 종목을 찾지 못했어요.\n\nDB에서 비슷한 종목:\n${candidates.map(c => `• ${c}`).join('\n')}\n\n정확한 종목명으로 다시 질문해 주세요.`,
+        display: 'chat',
+        provider: validProvider,
+        availableProviders: ALL_PROVIDERS,
+        dataSource: 'llm',
       })
     }
 
