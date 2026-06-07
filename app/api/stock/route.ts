@@ -122,10 +122,18 @@ const PARSE_SYSTEM_PROMPT = `너는 주식 질문 분석기야. 사용자 질문
 ### 단순:
 {
   "type": "simple",
-  "stocks": ["삼성전기", "삼성전자"],
+  "stocks": [
+    { "name": "삼성전기", "ticker": "009150", "market": "KOSPI" },
+    { "name": "애플",     "ticker": "AAPL",   "market": "NASDAQ" }
+  ],
   "period": { "type": "month", "value": "2026-03" },
   "fields": ["close"]
 }
+
+stocks 규칙:
+- ticker: 한국 종목은 6자리 숫자 (예: "005930"), 미국 종목은 심볼 (예: "AAPL", "RDW")
+- market: "KOSPI" | "KOSDAQ" | "NASDAQ" | "NYSE"
+- ticker를 모르면 빈 문자열 "" 로 두기 (서버가 name으로 LIKE 검색함)
 
 period.type 종류:
 - "month": { "type": "month", "value": "YYYY-MM" }
@@ -235,9 +243,10 @@ export async function POST(req: NextRequest) {
     }))
     const parseResult = await callStockSQLLLM(recentMessages, PARSE_SYSTEM_PROMPT)
 
+    type StockInput = { name: string; ticker: string; market: string }
     let parsed: {
       type: 'simple' | 'complex' | 'ask' | 'general'
-      stocks?: string[]
+      stocks?: StockInput[]
       period?: { type: string; value: string }
       fields?: string[]
       sql?: string
@@ -321,31 +330,45 @@ export async function POST(req: NextRequest) {
       const confirmCandidates: { query: string; candidates: string[] }[] = []
 
       try {
-        for (const stockName of parsed.stocks) {
-          // 정확 매칭 먼저
-          const exactRs = await client.execute({
-            sql: `SELECT ticker, market, name FROM stocks WHERE name = ? LIMIT 1`,
-            args: [stockName],
-          })
-
-          if (exactRs.rows.length > 0) {
-            const row = exactRs.rows[0] as any
-            verifiedTickers.push({ ticker: row[0], market: row[1], name: row[2] })
-            continue
+        for (const stock of parsed.stocks) {
+          // 1순위: ticker + market 정확 매칭
+          if (stock.ticker && stock.market) {
+            const tickerRs = await client.execute({
+              sql: `SELECT ticker, market, name FROM stocks WHERE ticker = ? AND market = ? LIMIT 1`,
+              args: [stock.ticker, stock.market],
+            })
+            if (tickerRs.rows.length > 0) {
+              const row = tickerRs.rows[0] as any
+              verifiedTickers.push({ ticker: row[0], market: row[1], name: row[2] })
+              continue
+            }
           }
 
-          // 정확 매칭 실패 → LIKE로 후보 탐색
-          const keyword = stockName.replace(/[()（）\s]/g, '').slice(0, 10)
+          // 2순위: name 정확 매칭
+          if (stock.name) {
+            const nameRs = await client.execute({
+              sql: `SELECT ticker, market, name FROM stocks WHERE name = ? LIMIT 1`,
+              args: [stock.name],
+            })
+            if (nameRs.rows.length > 0) {
+              const row = nameRs.rows[0] as any
+              verifiedTickers.push({ ticker: row[0], market: row[1], name: row[2] })
+              continue
+            }
+          }
+
+          // 3순위: name LIKE 후보 탐색 → 컨펌 요청
+          const keyword = (stock.name || stock.ticker).replace(/[()（）\s]/g, '').slice(0, 10)
           const likeRs = await client.execute({
-            sql: `SELECT name, market FROM stocks WHERE name LIKE ? LIMIT 5`,
-            args: [`%${keyword}%`],
+            sql: `SELECT name, ticker, market FROM stocks WHERE name LIKE ? OR ticker LIKE ? LIMIT 5`,
+            args: [`%${keyword}%`, `%${keyword}%`],
           })
 
           if (likeRs.rows.length > 0) {
-            const candidates = likeRs.rows.map((r: any) => `${r[0]} (${r[1]})`)
-            confirmCandidates.push({ query: stockName, candidates })
+            const candidates = likeRs.rows.map((r: any) => `${r[0]} (${r[1]}, ${r[2]})`)
+            confirmCandidates.push({ query: stock.name || stock.ticker, candidates })
           } else {
-            notFoundStocks.push(stockName)
+            notFoundStocks.push(stock.name || stock.ticker)
           }
         }
       } finally {
