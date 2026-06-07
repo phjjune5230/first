@@ -23,7 +23,6 @@ function validateSQL(sql: string): void {
       throw new Error(`허용되지 않는 SQL 키워드: ${kw}`)
     }
   }
-  // stock_prices 포함 쿼리면 날짜 조건 필수
   if (normalized.includes('STOCK_PRICES') && !normalized.includes('DATE')) {
     throw new Error('날짜 조건이 없는 쿼리는 실행할 수 없습니다.')
   }
@@ -34,58 +33,134 @@ function todayYYYYMMDD(): string {
   return new Date().toISOString().split('T')[0].replace(/-/g, '')
 }
 
-// ── 1단계: 질문 → SQL + display 타입 결정 ──────────
-const SQL_SYSTEM_PROMPT = `너는 주식 데이터 SQL 전문가야. 사용자 질문을 SQLite SQL로 변환해.
+// ── 기간 → startDate/endDate 변환 ───────────────────
+function resolvePeriod(period: { type: string; value: string }): { startDate: string; endDate: string } | null {
+  const { type, value } = period
 
-테이블 구조:
-  stock_prices (ticker TEXT, market TEXT, date TEXT, open REAL, high REAL, low REAL, close REAL, volume INTEGER)
-  stocks (ticker TEXT, name TEXT, market TEXT)
+  if (type === 'month') {
+    // value: "2026-03"
+    const [year, month] = value.split('-')
+    const start = `${year}${month}01`
+    const lastDay = new Date(Number(year), Number(month), 0).getDate()
+    const end = `${year}${month}${String(lastDay).padStart(2, '0')}`
+    return { startDate: start, endDate: end }
+  }
 
-market 값: 'KOSPI', 'KOSDAQ', 'NASDAQ', 'NYSE'
+  if (type === 'range') {
+    // value: "2026-03-01~2026-03-31"
+    const [s, e] = value.split('~')
+    return {
+      startDate: s.replace(/-/g, ''),
+      endDate: e.replace(/-/g, ''),
+    }
+  }
 
-질문에서 반드시 아래 3가지를 추출해:
-1. 종목명: KOSPI/KOSDAQ/NASDAQ/NYSE 상장 공식명 기준으로 정규화
-2. 기간: 반드시 명시되어야 함. 명시 없으면 display를 "ask"로 설정하고 sql은 null
-3. 원하는 정보: 종가/시가/거래량/OHLCV 등, 명시 없으면 close 기준
+  if (type === 'days') {
+    // value: "7" (최근 N일)
+    const days = parseInt(value)
+    const end = new Date()
+    const start = new Date()
+    start.setDate(start.getDate() - days)
+    return {
+      startDate: start.toISOString().split('T')[0].replace(/-/g, ''),
+      endDate: end.toISOString().split('T')[0].replace(/-/g, ''),
+    }
+  }
 
-종목명 검색 전략 (반드시 이 순서로):
-1단계 - 정확 매칭 우선: WHERE s.name = '삼성전자'
-2단계 - 정확 매칭 결과가 없을 때만 LIKE 사용하고 display를 "confirm"으로 설정: WHERE s.name LIKE '%삼성%'
+  if (type === 'year') {
+    // value: "2026"
+    return { startDate: `${value}0101`, endDate: `${value}1231` }
+  }
 
-예시 SQL:
-  SELECT sp.ticker, sp.market, sp.date, sp.close
-  FROM stock_prices sp
-  JOIN stocks s ON sp.ticker = s.ticker AND sp.market = s.market
-  WHERE s.name = '삼성전자'
-  AND sp.date >= '20260501' AND sp.date <= '20260531'
-  ORDER BY sp.date ASC
-  LIMIT 100
+  return null
+}
 
-반환 형식 (json):
-  { "sql": "...", "explainable": true, "display": "chat", "tickerNames": ["삼성전자"] }
-- tickerNames: 질문에서 추출한 종목명 배열 (없으면 [])
-- display 값 결정:
-  "chat"       → 단순 사실 질문 (종가 하나, 특정 날짜 1개 값 등)
-  "table"      → 여러 행 데이터 (기간별 주가, 순위, 비교 등)
-  "table+chart"→ 시계열 데이터 (1주일 이상 기간, 추세 파악용)
-  "ask"        → 기간이 명시되지 않은 경우
-  "confirm"    → 정확 매칭 종목 없어서 LIKE로 후보 찾은 경우
-- SELECT 결과에 반드시 sp.market 컬럼 포함 (통화 표기에 필수)
-- SELECT만 사용, LIMIT 최대 100
-- 오늘: ${todayYYYYMMDD()} (YYYYMMDD 형식)
-- date 컬럼은 'YYYYMMDD' 형식 문자열
+// ── 서버가 SQL 직접 조립 (단순 케이스) ─────────────
+function buildSimpleSQL(
+  verifiedTickers: { ticker: string; market: string; name: string }[],
+  fields: string[],
+  startDate: string,
+  endDate: string
+): string {
+  const allowedFields = ['open', 'high', 'low', 'close', 'volume']
+  const safeFields = fields.filter(f => allowedFields.includes(f))
+  if (safeFields.length === 0) safeFields.push('close')
 
-날짜 규칙:
-- 날짜 조건은 반드시 YYYYMMDD 문자열 리터럴로 직접 계산해서 사용
-- "5월 둘째주" → sp.date >= '20260512' AND sp.date <= '20260518'
-- "5월" → substr(sp.date,1,6) = '202605'
-- strftime, month(), year(), day() 등 함수 사용 금지
+  const selectFields = safeFields.map(f => `sp.${f}`).join(', ')
+  const tickerConditions = verifiedTickers
+    .map(t => `(sp.ticker = '${t.ticker}' AND sp.market = '${t.market}')`)
+    .join(' OR ')
 
-- 데이터로 답할 수 없는 질문이면: { "sql": null, "explainable": false, "display": "chat", "tickerNames": [] }`
+  return `
+    SELECT sp.ticker, sp.market, sp.date, ${selectFields}
+    FROM stock_prices sp
+    WHERE (${tickerConditions})
+    AND sp.date >= '${startDate}' AND sp.date <= '${endDate}'
+    ORDER BY sp.date ASC, sp.ticker ASC
+    LIMIT 100
+  `.trim()
+}
 
+// ── 1단계 LLM 프롬프트: 단순/복잡 판단 + 정보 추출 ─
+const PARSE_SYSTEM_PROMPT = `너는 주식 질문 분석기야. 사용자 질문을 분석해서 JSON만 반환해. 다른 텍스트 없이 JSON만.
 
+## 단순 질문 (type: "simple")
+- 특정 종목(들) + 기간 + 필드 조합
+- 예: "삼성전기 3월 주가", "삼성전자랑 SK하이닉스 5월 종가 비교", "애플 최근 1주일 거래량"
 
-// ── 3단계: 데이터 → 자연어 답변 프롬프트 ──────────
+## 복잡 질문 (type: "complex")  
+- 랭킹/집계: "코스피에서 가장 많이 오른 종목 TOP 5"
+- 조건 필터: "거래량 100만 이상인 날만"
+- 계산: "수익률", "이동평균"
+- 종목명 없이 시장 전체 대상
+
+## 기간 미입력 (type: "ask")
+- 종목은 있지만 기간이 전혀 없는 경우
+
+## 반환 형식
+
+### 단순:
+{
+  "type": "simple",
+  "stocks": ["삼성전기", "삼성전자"],
+  "period": { "type": "month", "value": "2026-03" },
+  "fields": ["close"]
+}
+
+period.type 종류:
+- "month": { "type": "month", "value": "YYYY-MM" }
+- "range": { "type": "range", "value": "YYYY-MM-DD~YYYY-MM-DD" }
+- "days":  { "type": "days",  "value": "7" }  (최근 N일)
+- "year":  { "type": "year",  "value": "YYYY" }
+
+fields 가능 값: "open", "high", "low", "close", "volume"
+fields 미입력 → ["close"]
+
+### 복잡:
+{
+  "type": "complex",
+  "sql": "SELECT ... (완성된 SQL)"
+}
+
+SQL 규칙:
+- 테이블: stock_prices(ticker,market,date,open,high,low,close,volume), stocks(ticker,name,market)
+- date 형식: YYYYMMDD 문자열
+- 오늘: ${todayYYYYMMDD()}
+- SELECT만, LIMIT 최대 100
+- market 컬럼 반드시 포함
+- strftime 등 날짜 함수 금지, 문자열 직접 비교
+
+### 기간 없음:
+{
+  "type": "ask"
+}
+
+### 주식 무관 질문:
+{
+  "type": "general"
+}`
+
+// ── 3단계: 자연어 답변 프롬프트 ────────────────────
 function buildAnswerPrompt(question: string, sql: string, rows: any[], display: string): string {
   const displayHint = display === 'table+chart' || display === 'table'
     ? '\n- 데이터는 테이블/차트로 별도 표시되므로 숫자를 일일이 나열하지 말고 전체 흐름/특징 위주로 요약해줘'
@@ -93,8 +168,8 @@ function buildAnswerPrompt(question: string, sql: string, rows: any[], display: 
 
   const markets = [...new Set(rows.map((r: any) => r.market).filter(Boolean))]
   const currencyHint = markets.length > 0
-    ? `\n- 통화: KOSPI/KOSDAQ 종목은 원(₩), NASDAQ/NYSE 종목은 달러($) 단위로 표기 (이 쿼리의 market: ${markets.join(', ')})`
-    : '\n- 통화: KOSPI/KOSDAQ 종목은 원(₩), NASDAQ/NYSE 종목은 달러($) 단위로 표기'
+    ? `\n- 통화: KOSPI/KOSDAQ → 원(₩), NASDAQ/NYSE → 달러($) (이 쿼리의 market: ${markets.join(', ')})`
+    : '\n- 통화: KOSPI/KOSDAQ → 원(₩), NASDAQ/NYSE → 달러($)'
 
   return `너는 주식 비서야. 아래 데이터를 바탕으로 사용자 질문에 친절하게 답해줘.
 
@@ -108,6 +183,19 @@ function buildAnswerPrompt(question: string, sql: string, rows: any[], display: 
 실행된 SQL: ${sql}
 조회 결과 (${rows.length}행):
 ${JSON.stringify(rows.slice(0, 20), null, 2)}${rows.length > 20 ? `\n...(총 ${rows.length}행)` : ''}`
+}
+
+// ── display 타입 결정 ────────────────────────────────
+function resolveDisplay(rows: any[], period: { type: string; value: string } | null): 'chat' | 'table' | 'table+chart' {
+  if (rows.length <= 1) return 'chat'
+  // 날짜 컬럼이 있고 기간이 일주일 이상이면 차트
+  const hasDate = rows[0] && 'date' in rows[0]
+  if (hasDate && period) {
+    if (period.type === 'month' || period.type === 'year') return 'table+chart'
+    if (period.type === 'days' && parseInt(period.value) >= 7) return 'table+chart'
+    if (period.type === 'range') return 'table+chart'
+  }
+  return 'table'
 }
 
 export async function POST(req: NextRequest) {
@@ -136,28 +224,35 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // ── 일반 채팅 (Text-to-SQL) ──────────────────────
+  // ── 일반 채팅 ────────────────────────────────────
   try {
     const userQuestion = messages[messages.length - 1]?.content ?? ''
 
-    // 1단계: SQL + display 결정 (멀티턴 맥락 포함 — 최근 6개 메시지)
+    // ── 1단계: 질문 파싱 (단순/복잡/ask/general 판단) ─
     const recentMessages = messages.slice(-6).map((m: { role: string; content: string }) => ({
       role: m.role as 'user' | 'assistant',
       content: m.content,
     }))
-    const sqlResult = await callStockSQLLLM(recentMessages, SQL_SYSTEM_PROMPT)
+    const parseResult = await callStockSQLLLM(recentMessages, PARSE_SYSTEM_PROMPT)
 
-    let parsed: { sql: string | null; explainable: boolean; display: string; tickerNames?: string[] }
-    try {
-      parsed = JSON.parse(sqlResult.content.replace(/```json|```/g, '').trim())
-    } catch {
-      parsed = { sql: null, explainable: false, display: 'chat', tickerNames: [] }
+    let parsed: {
+      type: 'simple' | 'complex' | 'ask' | 'general'
+      stocks?: string[]
+      period?: { type: string; value: string }
+      fields?: string[]
+      sql?: string
     }
 
-    // display === 'ask': 기간 미입력 시 사용자에게 기간 질문
-    if (parsed.display === 'ask') {
+    try {
+      parsed = JSON.parse(parseResult.content.replace(/```json|```/g, '').trim())
+    } catch {
+      parsed = { type: 'general' }
+    }
+
+    // ── ask: 기간 미입력 ─────────────────────────────
+    if (parsed.type === 'ask') {
       return NextResponse.json({
-        content: '조회할 기간을 말씀해주세요. (예: 5월, 최근 1주일, 2026년 1분기)',
+        content: '조회할 기간을 말씀해주세요. (예: 3월, 최근 1주일, 2026년 1분기)',
         display: 'ask',
         provider: validProvider,
         availableProviders: ALL_PROVIDERS,
@@ -165,31 +260,8 @@ export async function POST(req: NextRequest) {
       })
     }
 
-    // display === 'confirm': 정확 매칭 실패, stocks만 직접 조회해서 후보 컨펌 요청
-    if (parsed.display === 'confirm' && parsed.tickerNames && parsed.tickerNames.length > 0) {
-      const client = getTursoClient()
-      let candidates: string[] = []
-      try {
-        const keyword = parsed.tickerNames[0].replace(/[()（）\s]/g, '').slice(0, 10)
-        const rs = await client.execute({
-          sql: `SELECT name, market FROM stocks WHERE name LIKE ? LIMIT 10`,
-          args: [`%${keyword}%`],
-        })
-        candidates = rs.rows.map((r: any) => `${r[0]} (${r[1]})`)
-      } finally {
-        client.close()
-      }
-      return NextResponse.json({
-        content: `"${parsed.tickerNames[0]}"에 해당하는 종목을 찾지 못했어요.\n\nDB에서 비슷한 종목:\n${candidates.map(c => `• ${c}`).join('\n')}\n\n정확한 종목명으로 다시 질문해 주세요.`,
-        display: 'chat',
-        provider: validProvider,
-        availableProviders: ALL_PROVIDERS,
-        dataSource: 'llm',
-      })
-    }
-
-    // SQL 없는 질문 (일반 주식 지식 등)
-    if (!parsed.sql || !parsed.explainable) {
+    // ── general: 주식 무관 질문 ──────────────────────
+    if (parsed.type === 'general') {
       const fallbackPrompt = `너는 주식 비서야. 투자 권유 없이 정보만 제공해. 한국어로 답해.
 참고: DB에는 약 3년치 KOSPI/KOSDAQ/NASDAQ/NYSE 일별 OHLCV 데이터가 있음. 실시간 데이터는 없음.`
       const result = await callStockLLM(messages, fallbackPrompt, validProvider)
@@ -202,43 +274,160 @@ export async function POST(req: NextRequest) {
       })
     }
 
-    // SQL 검증
-    validateSQL(parsed.sql)
-    console.log('[SQL]', parsed.sql)
+    // ── complex: LLM이 SQL 직접 생성 ────────────────
+    if (parsed.type === 'complex' && parsed.sql) {
+      validateSQL(parsed.sql)
+      console.log('[SQL][complex]', parsed.sql)
 
-    // 2단계: Turso 쿼리 실행
-    const client = getTursoClient()
-    let rows: any[] = []
-    try {
-      const rs = await client.execute(parsed.sql)
-      rows = rs.rows.map((row: any) => {
-        const obj: Record<string, any> = {}
-        rs.columns.forEach((col: string, i: number) => { obj[col] = row[i] })
-        return obj
+      const client = getTursoClient()
+      let rows: any[] = []
+      try {
+        const rs = await client.execute(parsed.sql)
+        rows = rs.rows.map((row: any) => {
+          const obj: Record<string, any> = {}
+          rs.columns.forEach((col: string, i: number) => { obj[col] = row[i] })
+          return obj
+        })
+      } finally {
+        client.close()
+      }
+
+      const display = resolveDisplay(rows, null)
+      const answerPrompt = buildAnswerPrompt(userQuestion, parsed.sql, rows, display)
+      const result = await callStockLLM(
+        [{ role: 'user', content: answerPrompt }],
+        '',
+        validProvider
+      )
+
+      return NextResponse.json({
+        content: result.content,
+        display,
+        rows,
+        provider: result.provider,
+        availableProviders: ALL_PROVIDERS,
+        dataSource: 'turso',
+        rowCount: rows.length,
       })
-
-
-    } finally {
-      client.close()
     }
 
-    // 3단계: 자연어 답변
-    const answerPrompt = buildAnswerPrompt(userQuestion, parsed.sql, rows, parsed.display)
-    const result = await callStockLLM(
-      [{ role: 'user', content: answerPrompt }],
-      '',
-      validProvider
-    )
+    // ── simple: 서버가 종목 검증 + SQL 직접 조립 ─────
+    if (parsed.type === 'simple' && parsed.stocks && parsed.period) {
+      const client = getTursoClient()
 
-    return NextResponse.json({
-      content: result.content,
-      display: parsed.display,
-      rows,
-      provider: result.provider,
-      availableProviders: ALL_PROVIDERS,
-      dataSource: 'turso',
-      rowCount: rows.length,
-    })
+      // 2단계: 종목명 DB 검증
+      const verifiedTickers: { ticker: string; market: string; name: string }[] = []
+      const notFoundStocks: string[] = []
+      const confirmCandidates: { query: string; candidates: string[] }[] = []
+
+      try {
+        for (const stockName of parsed.stocks) {
+          // 정확 매칭 먼저
+          const exactRs = await client.execute({
+            sql: `SELECT ticker, market, name FROM stocks WHERE name = ? LIMIT 1`,
+            args: [stockName],
+          })
+
+          if (exactRs.rows.length > 0) {
+            const row = exactRs.rows[0] as any
+            verifiedTickers.push({ ticker: row[0], market: row[1], name: row[2] })
+            continue
+          }
+
+          // 정확 매칭 실패 → LIKE로 후보 탐색
+          const keyword = stockName.replace(/[()（）\s]/g, '').slice(0, 10)
+          const likeRs = await client.execute({
+            sql: `SELECT name, market FROM stocks WHERE name LIKE ? LIMIT 5`,
+            args: [`%${keyword}%`],
+          })
+
+          if (likeRs.rows.length > 0) {
+            const candidates = likeRs.rows.map((r: any) => `${r[0]} (${r[1]})`)
+            confirmCandidates.push({ query: stockName, candidates })
+          } else {
+            notFoundStocks.push(stockName)
+          }
+        }
+      } finally {
+        client.close()
+      }
+
+      // 후보가 있으면 컨펌 요청
+      if (confirmCandidates.length > 0) {
+        const confirmMsg = confirmCandidates.map(({ query, candidates }) =>
+          `"${query}"와(과) 정확히 일치하는 종목이 없어요.\n\n비슷한 종목:\n${candidates.map(c => `• ${c}`).join('\n')}`
+        ).join('\n\n')
+
+        return NextResponse.json({
+          content: confirmMsg + '\n\n정확한 종목명으로 다시 질문해 주세요.',
+          display: 'chat',
+          provider: validProvider,
+          availableProviders: ALL_PROVIDERS,
+          dataSource: 'llm',
+        })
+      }
+
+      // 아예 없는 종목
+      if (notFoundStocks.length > 0) {
+        return NextResponse.json({
+          content: `다음 종목을 찾을 수 없어요: ${notFoundStocks.join(', ')}\n\n정확한 종목명으로 다시 질문해 주세요.`,
+          display: 'chat',
+          provider: validProvider,
+          availableProviders: ALL_PROVIDERS,
+          dataSource: 'llm',
+        })
+      }
+
+      // 기간 변환
+      const resolvedPeriod = resolvePeriod(parsed.period)
+      if (!resolvedPeriod) {
+        return NextResponse.json({
+          content: '기간을 이해하지 못했어요. (예: 3월, 최근 1주일, 2026년 1분기)',
+          display: 'ask',
+          provider: validProvider,
+          availableProviders: ALL_PROVIDERS,
+          dataSource: 'ask',
+        })
+      }
+
+      // SQL 조립 & 실행
+      const sql = buildSimpleSQL(verifiedTickers, parsed.fields ?? ['close'], resolvedPeriod.startDate, resolvedPeriod.endDate)
+      console.log('[SQL][simple]', sql)
+
+      const client2 = getTursoClient()
+      let rows: any[] = []
+      try {
+        const rs = await client2.execute(sql)
+        rows = rs.rows.map((row: any) => {
+          const obj: Record<string, any> = {}
+          rs.columns.forEach((col: string, i: number) => { obj[col] = row[i] })
+          return obj
+        })
+      } finally {
+        client2.close()
+      }
+
+      const display = resolveDisplay(rows, parsed.period)
+      const answerPrompt = buildAnswerPrompt(userQuestion, sql, rows, display)
+      const result = await callStockLLM(
+        [{ role: 'user', content: answerPrompt }],
+        '',
+        validProvider
+      )
+
+      return NextResponse.json({
+        content: result.content,
+        display,
+        rows,
+        provider: result.provider,
+        availableProviders: ALL_PROVIDERS,
+        dataSource: 'turso',
+        rowCount: rows.length,
+      })
+    }
+
+    // 파싱 실패 fallback
+    throw new Error('질문을 이해하지 못했습니다.')
 
   } catch (err) {
     console.error('Stock chat error:', err)
@@ -246,7 +435,7 @@ export async function POST(req: NextRequest) {
     const isSQL = errMsg.includes('SQL') || errMsg.includes('sqlite')
     return NextResponse.json({
       content: isSQL
-        ? '죄송해요, 해당 데이터를 조회하는 데 문제가 생겼어요. 질문을 좀 더 구체적으로 해주시면 다시 시도할게요.'
+        ? '죄송해요, 데이터 조회 중 문제가 생겼어요. 질문을 좀 더 구체적으로 해주시면 다시 시도할게요.'
         : '오류가 발생했어요. 잠시 후 다시 시도해주세요.',
       display: 'chat',
       provider: validProvider,
