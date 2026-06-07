@@ -183,7 +183,8 @@ export async function POST(req: NextRequest) {
 
     // SQL 검증
     validateSQL(parsed.sql)
-
+    console.log('[SQL]', parsed.sql)
+      
     // 2단계: Turso 쿼리 실행
     const client = getTursoClient()
     let rows: any[] = []
