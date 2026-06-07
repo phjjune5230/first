@@ -1,281 +1,374 @@
-import { NextRequest, NextResponse } from 'next/server'
-import { validateProvider } from '@/lib/validation'
-import { callStockSQLLLM, callStockLLM, ALL_PROVIDERS } from '@/lib/llm'
-import * as libsql from '@libsql/client'
+'use client'
 
-// ── Turso 클라이언트 ────────────────────────────────
-function getTursoClient() {
-  return libsql.createClient({
-    url:       process.env.TURSO_DATABASE_URL!,
-    authToken: process.env.TURSO_AUTH_TOKEN!,
-  })
+import { useState, useEffect, useRef } from 'react'
+import { ALL_PROVIDERS } from '@/lib/llm'
+
+type Message = {
+  role: 'user' | 'assistant'
+  content: string
+  display?: 'chat' | 'table' | 'table+chart' | 'ask'
+  rows?: any[]
+  displayOptions?: string[]
+  pendingSql?: string
 }
 
-// ── SQL 안전 검증 (SELECT만 허용) ───────────────────
-function validateSQL(sql: string): void {
-  const normalized = sql.trim().toUpperCase()
-  if (!normalized.startsWith('SELECT')) {
-    throw new Error('SELECT 쿼리만 허용됩니다.')
-  }
-  const forbidden = ['INSERT', 'UPDATE', 'DELETE', 'DROP', 'ALTER', 'CREATE', 'TRUNCATE']
-  for (const kw of forbidden) {
-    if (normalized.includes(kw)) {
-      throw new Error(`허용되지 않는 SQL 키워드: ${kw}`)
-    }
-  }
-}
+export default function StockPage() {
+  const [messages, setMessages] = useState<Message[]>([
+    { role: 'assistant', content: '안녕하세요! 주식 비서예요.\n삼성전자 최근 1개월 주가, KOSPI 거래량 상위 종목 등 DB 기반으로 답해드려요.' }
+  ])
+  const [input, setInput] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [selectedProvider, setSelectedProvider] = useState(ALL_PROVIDERS[0])
+  const bottomRef = useRef<HTMLDivElement>(null)
 
-// ── 오늘 날짜 YYYYMMDD ──────────────────────────────
-function todayYYYYMMDD(): string {
-  return new Date().toISOString().split('T')[0].replace(/-/g, '')
-}
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
 
-// ── 1단계: 질문 → SQL + display 타입 결정 ──────────
-const SQL_SYSTEM_PROMPT = `너는 주식 데이터 SQL 전문가야. 사용자 질문을 SQLite SQL로 변환해.
+  async function sendMessage(overrideContent?: string, extraBody?: Record<string, any>) {
+    const text = overrideContent ?? input.trim()
+    if (!text || loading) return
 
-테이블 구조:
-  stock_prices (ticker TEXT, market TEXT, date TEXT, open REAL, high REAL, low REAL, close REAL, volume INTEGER)
-  stocks (ticker TEXT, name TEXT, market TEXT)
+    const userMsg: Message = { role: 'user', content: text }
+    const newMessages = [...messages, userMsg]
+    setMessages(newMessages)
+    setInput('')
+    setLoading(true)
 
-market 값: 'KOSPI', 'KOSDAQ', 'NASDAQ', 'NYSE'
-
-질문에서 반드시 아래 3가지를 추출해:
-1. 종목명: KOSPI/KOSDAQ 종목은 한국어 공식명 기준으로 정규화 (예: 엘지전자→LG전자, 삼성전자우선주→삼성전자우)
-             NASDAQ/NYSE 종목은 영어 공식명 또는 티커 기준으로 정규화 (예: 애플→Apple, 구글→Alphabet)
-2. 기간: 명시 없으면 최근 1개월 기본값 사용
-3. 원하는 정보: 종가/시가/거래량/OHLCV 등, 명시 없으면 close 기준
-
-종목명으로 검색할 때는 반드시 stocks 테이블과 JOIN:
-  SELECT sp.ticker, sp.market, sp.date, sp.close
-  FROM stock_prices sp
-  JOIN stocks s ON sp.ticker = s.ticker AND sp.market = s.market
-  WHERE s.name LIKE '%LG전자%'
-
-규칙:
-- 반드시 JSON만 반환 (다른 텍스트 없이):
-  { "sql": "...", "explainable": true, "display": "chat", "tickerNames": ["LG전자"] }
-- tickerNames: 질문에서 추출한 종목명 배열 (종목 검색 쿼리일 때만, 없으면 [])
-- display 값 결정:
-  "chat"       → 단순 사실 질문 (종가 하나, 특정 날짜 1개 값 등)
-  "table"      → 여러 행 데이터 (기간별 주가, 순위, 비교 등)
-  "table+chart"→ 시계열 데이터 (1주일 이상 기간, 추세 파악용)
-  "ask"        → 데이터는 있는데 표현 방식이 애매한 경우 (사용자에게 물어봄)
-- SELECT 결과에 반드시 market 컬럼 포함
-- SELECT만 사용, LIMIT 최대 100
-- 오늘: ${todayYYYYMMDD()} (YYYYMMDD 형식)
-- date 컬럼은 'YYYYMMDD' 형식 문자열 (예: '20260401')
-- 특정 월: date >= '20260601' AND date <= '20260630'
-- 최근 1개월: date >= strftime('%Y%m%d', date('now', '-1 month'))
-- 최근 1주일: date >= strftime('%Y%m%d', date('now', '-7 days'))
-- 데이터로 답할 수 없는 질문이면: { "sql": null, "explainable": false, "display": "chat", "tickerNames": [] }`
-
-// ── 종목 후보 검색 (미매칭 시 사용) ────────────────
-async function findTickerCandidates(client: any, name: string): Promise<string[]> {
-  // 입력값에서 공백/특수문자 제거 후 부분 검색
-  const keyword = name.replace(/[()（）\s]/g, '').slice(0, 10)
-  try {
-    const rs = await client.execute({
-      sql: `SELECT name, market FROM stocks WHERE name LIKE ? LIMIT 5`,
-      args: [`%${keyword}%`],
-    })
-    return rs.rows.map((r: any) => `${r[0]} (${r[1]})`)
-  } catch {
-    return []
-  }
-}
-
-// ── 3단계: 데이터 → 자연어 답변 프롬프트 ──────────
-function buildAnswerPrompt(question: string, sql: string, rows: any[], display: string): string {
-  const displayHint = display === 'table+chart' || display === 'table'
-    ? '\n- 데이터는 테이블/차트로 별도 표시되므로 숫자를 일일이 나열하지 말고 전체 흐름/특징 위주로 요약해줘'
-    : ''
-
-  // 통화 힌트: rows에 market 있으면 명시
-  const markets = [...new Set(rows.map((r: any) => r.market).filter(Boolean))]
-  const currencyHint = markets.length > 0
-    ? `\n- 통화: KOSPI/KOSDAQ 종목은 원(₩), NASDAQ/NYSE 종목은 달러($) 단위로 표기 (이 쿼리의 market: ${markets.join(', ')})`
-    : '\n- 통화: KOSPI/KOSDAQ 종목은 원(₩), NASDAQ/NYSE 종목은 달러($) 단위로 표기'
-
-  return `너는 주식 비서야. 아래 데이터를 바탕으로 사용자 질문에 친절하게 답해줘.
-
-규칙:
-- 투자 권유 절대 금지, 정보 제공만
-- 숫자는 읽기 쉽게 포맷 (원화: 78,500원 / 달러: $178.50)
-- 데이터가 없으면 솔직하게 말해
-- 한국어로 답해${currencyHint}${displayHint}
-
-사용자 질문: ${question}
-실행된 SQL: ${sql}
-조회 결과 (${rows.length}행):
-${JSON.stringify(rows.slice(0, 20), null, 2)}${rows.length > 20 ? `\n...(총 ${rows.length}행)` : ''}`
-}
-
-export async function POST(req: NextRequest) {
-  const body = await req.json()
-  const { messages, action, provider } = body
-  const validProvider = validateProvider(provider)
-
-  // ── save_session ────────────────────────────────
-  if (action === 'save_session') {
     try {
-      const result = await callStockLLM(
-        [{
-          role: 'user',
-          content: `다음 대화를 분석해서 JSON만 반환해. 다른 텍스트 없이 JSON만.
-{ "summary": "오늘 대화 내용 한 줄 요약", "notes": "특이사항" }
-대화: ${messages.map((m: { role: string; content: string }) => `${m.role}: ${m.content}`).join('\n')}`,
-        }],
-        '',
-        validProvider
-      )
-      const parsed = JSON.parse(result.content.replace(/```json|```/g, '').trim())
-      return NextResponse.json({ ok: true, log: { date: new Date().toISOString().split('T')[0], ...parsed } })
-    } catch (err) {
-      console.error('Save session error:', err)
-      return NextResponse.json({ ok: false, error: '요약 파싱 실패' })
-    }
-  }
-
-  // ── 일반 채팅 (Text-to-SQL) ──────────────────────
-  try {
-    const userQuestion = messages[messages.length - 1]?.content ?? ''
-
-    // 1단계: SQL + display 결정 (멀티턴 맥락 포함 — 최근 6개 메시지)
-    const recentMessages = messages.slice(-6).map((m: { role: string; content: string }) => ({
-      role: m.role as 'user' | 'assistant',
-      content: m.content,
-    }))
-    const sqlResult = await callStockSQLLLM(recentMessages, SQL_SYSTEM_PROMPT)
-
-    let parsed: { sql: string | null; explainable: boolean; display: string; tickerNames?: string[] }
-    try {
-      parsed = JSON.parse(sqlResult.content.replace(/```json|```/g, '').trim())
-    } catch {
-      parsed = { sql: null, explainable: false, display: 'chat', tickerNames: [] }
-    }
-
-    // display === 'ask': 표현 방식 사용자에게 확인
-    if (parsed.display === 'ask') {
-      return NextResponse.json({
-        content: '어떻게 보여드릴까요?',
-        display: 'ask',
-        displayOptions: ['채팅', '테이블', '그래프'],
-        provider: validProvider,
-        availableProviders: ALL_PROVIDERS,
-        dataSource: 'ask',
-        pendingSql: parsed.sql,
+      const res = await fetch('/api/stock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: newMessages.map(({ role, content }) => ({ role, content })),
+          provider: selectedProvider,
+          ...extraBody,
+        }),
       })
-    }
+      const data = await res.json()
 
-    // SQL 없는 질문 (일반 주식 지식 등)
-    if (!parsed.sql || !parsed.explainable) {
-      const fallbackPrompt = `너는 주식 비서야. 투자 권유 없이 정보만 제공해. 한국어로 답해.
-참고: DB에는 약 3년치 KOSPI/KOSDAQ/NASDAQ/NYSE 일별 OHLCV 데이터가 있음. 실시간 데이터는 없음.`
-      const result = await callStockLLM(messages, fallbackPrompt, validProvider)
-      return NextResponse.json({
-        content: result.content,
-        display: 'chat',
-        provider: result.provider,
-        availableProviders: ALL_PROVIDERS,
-        dataSource: 'llm',
-      })
-    }
-
-    // SQL 검증
-    validateSQL(parsed.sql)
-
-    // 2단계: Turso 쿼리 실행
-    const client = getTursoClient()
-    let rows: any[] = []
-    try {
-      const rs = await client.execute(parsed.sql)
-      rows = rs.rows.map((row: any) => {
-        const obj: Record<string, any> = {}
-        rs.columns.forEach((col: string, i: number) => { obj[col] = row[i] })
-        return obj
-      })
-
-      // ── 종목 미매칭 감지: rows가 비었고 tickerNames가 있을 때 ──
-      if (rows.length === 0 && parsed.tickerNames && parsed.tickerNames.length > 0) {
-        const allCandidates: string[] = []
-        for (const name of parsed.tickerNames) {
-          const candidates = await findTickerCandidates(client, name)
-          allCandidates.push(...candidates)
-        }
-
-        if (allCandidates.length > 0) {
-          // 후보가 있으면 LLM한테 매칭 판단 맡기기
-          const matchResult = await callStockSQLLLM(
-            [{
-              role: 'user',
-              content: `사용자가 "${parsed.tickerNames.join(', ')}"을 검색했는데 DB에서 찾지 못했어.
-DB에 있는 후보 종목들: ${allCandidates.join(' / ')}
-이 중 사용자가 원하는 종목과 가장 가까운 것을 골라서 JSON만 반환해. 다른 텍스트 없이.
-{ "matched": "LG전자 (KOSPI)", "confidence": "high" }
-확실하지 않으면 confidence를 "low"로 설정해.`,
-            }],
-            ''
-          )
-
-          let matchParsed: { matched?: string; confidence?: string } = {}
-          try {
-            matchParsed = JSON.parse(matchResult.content.replace(/```json|```/g, '').trim())
-          } catch { /* 파싱 실패 시 후보 목록만 보여줌 */ }
-
-          if (matchParsed.matched && matchParsed.confidence === 'high') {
-            // 신뢰도 높으면 자동 재검색 안내
-            return NextResponse.json({
-              content: `"${parsed.tickerNames.join(', ')}"을 찾지 못했어요. 혹시 "${matchParsed.matched.split(' (')[0]}"을 말씀하신 건가요? 맞다면 다시 질문해 주세요.`,
-              display: 'chat',
-              provider: validProvider,
-              availableProviders: ALL_PROVIDERS,
-              dataSource: 'llm',
-            })
-          } else {
-            // 신뢰도 낮으면 후보 목록 전달
-            return NextResponse.json({
-              content: `"${parsed.tickerNames.join(', ')}"에 해당하는 종목을 찾지 못했어요.\n\nDB에서 비슷한 종목:\n${allCandidates.map(c => `• ${c}`).join('\n')}\n\n정확한 종목명으로 다시 질문해 주세요.`,
-              display: 'chat',
-              provider: validProvider,
-              availableProviders: ALL_PROVIDERS,
-              dataSource: 'llm',
-            })
-          }
-        }
-      }
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: data.content ?? '',
+        display: data.display ?? 'chat',
+        rows: data.rows,
+        displayOptions: data.displayOptions,
+        pendingSql: data.pendingSql,
+      }])
+    } catch (e) {
+      console.error(e)
+      setMessages(prev => [...prev, { role: 'assistant', content: '오류가 발생했어요. 다시 시도해주세요.' }])
     } finally {
-      client.close()
+      setLoading(false)
     }
-
-    // 3단계: 자연어 답변
-    const answerPrompt = buildAnswerPrompt(userQuestion, parsed.sql, rows, parsed.display)
-    const result = await callStockLLM(
-      [{ role: 'user', content: answerPrompt }],
-      '',
-      validProvider
-    )
-
-    return NextResponse.json({
-      content: result.content,
-      display: parsed.display,
-      rows,
-      provider: result.provider,
-      availableProviders: ALL_PROVIDERS,
-      dataSource: 'turso',
-      rowCount: rows.length,
-    })
-
-  } catch (err) {
-    console.error('Stock chat error:', err)
-    const errMsg = String(err)
-    const isSQL = errMsg.includes('SQL') || errMsg.includes('sqlite')
-    return NextResponse.json({
-      content: isSQL
-        ? '죄송해요, 해당 데이터를 조회하는 데 문제가 생겼어요. 질문을 좀 더 구체적으로 해주시면 다시 시도할게요.'
-        : '오류가 발생했어요. 잠시 후 다시 시도해주세요.',
-      display: 'chat',
-      provider: validProvider,
-      availableProviders: ALL_PROVIDERS,
-    }, { status: 200 })
   }
+
+  async function handleDisplayChoice(choice: string, pendingSql: string | undefined, msgIndex: number) {
+    const choiceMsg = `${choice}으로 보여줘`
+    setMessages(prev => prev.map((m, i) =>
+      i === msgIndex ? { ...m, display: 'chat', content: m.content + `\n→ "${choice}" 선택됨` } : m
+    ))
+    await sendMessage(choiceMsg)
+  }
+
+  async function endSession() {
+    if (messages.length < 2) return
+    setLoading(true)
+    try {
+      const res = await fetch('/api/stock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages, action: 'save_session', provider: selectedProvider }),
+      })
+      const data = await res.json()
+      if (data.ok) {
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: `✅ 저장 완료!\n📝 요약: ${data.log.summary}\n💡 메모: ${data.log.notes}`,
+        }])
+      }
+    } catch (e) { console.error(e) }
+    finally { setLoading(false) }
+  }
+
+  return (
+    <main className="min-h-screen bg-[#0f0f0f] text-white flex flex-col" style={{ fontFamily: "'DM Mono', monospace" }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@400;600;700&display=swap');
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: #0f0f0f; }
+        ::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+        .msg-user { background: #1a1a1a; border-left: 2px solid #e8ff47; }
+        .msg-assistant { background: transparent; border-left: 2px solid #333; }
+        textarea { resize: none; }
+        .blink { animation: blink 1s step-end infinite; }
+        @keyframes blink { 50% { opacity: 0; } }
+        table { border-collapse: collapse; width: 100%; font-size: 12px; }
+        th { background: #1a1a1a; color: #e8ff47; padding: 6px 10px; text-align: right; border-bottom: 1px solid #2a2a2a; }
+        th:first-child { text-align: left; }
+        td { padding: 5px 10px; text-align: right; border-bottom: 1px solid #1a1a1a; color: #ccc; }
+        td:first-child { text-align: left; color: #fff; }
+        tr:hover td { background: #1a1a1a; }
+      `}</style>
+
+      <header className="border-b border-[#222] px-6 py-4 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <a href="/" className="text-[#444] hover:text-[#e8ff47] text-xs transition-colors">← 홈</a>
+          <h1 style={{ fontFamily: "'Syne', sans-serif", fontWeight: 700 }} className="text-lg tracking-tight">
+            주식 비서
+          </h1>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 text-xs text-[#888]">
+            <span>LLM:</span>
+            <select
+              value={selectedProvider}
+              onChange={(e) => setSelectedProvider(e.target.value)}
+              className="bg-[#111] border border-[#333] text-white text-xs rounded px-2 py-1 outline-none"
+            >
+              {ALL_PROVIDERS.map((p) => (
+                <option key={p} value={p}>{p}</option>
+              ))}
+            </select>
+          </div>
+          {messages.length > 2 && (
+            <button
+              onClick={endSession}
+              disabled={loading}
+              className="text-xs border border-[#333] px-3 py-1.5 rounded hover:border-[#e8ff47] hover:text-[#e8ff47] transition-colors disabled:opacity-40"
+            >
+              세션 종료 & 저장
+            </button>
+          )}
+        </div>
+      </header>
+
+      <div className="flex-1 overflow-y-auto px-4 py-6 space-y-4 max-w-3xl mx-auto w-full">
+        {messages.map((msg, i) => (
+          <div key={i}>
+            <div className={`px-4 py-3 rounded-sm text-sm leading-relaxed whitespace-pre-wrap ${
+              msg.role === 'user' ? 'msg-user' : 'msg-assistant'
+            }`}>
+              <span className={`text-xs font-medium mr-2 ${msg.role === 'user' ? 'text-[#e8ff47]' : 'text-[#555]'}`}>
+                {msg.role === 'user' ? 'you' : 'ai'}
+              </span>
+              {msg.content}
+            </div>
+
+            {/* 표현 방식 선택 버튼 */}
+            {msg.display === 'ask' && msg.displayOptions && (
+              <div className="mt-2 flex gap-2 pl-4">
+                {msg.displayOptions.map((opt) => (
+                  <button
+                    key={opt}
+                    onClick={() => handleDisplayChoice(opt, msg.pendingSql, i)}
+                    disabled={loading}
+                    className="text-xs border border-[#333] px-3 py-1.5 rounded hover:border-[#e8ff47] hover:text-[#e8ff47] transition-colors disabled:opacity-40"
+                  >
+                    {opt}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* 테이블 */}
+            {(msg.display === 'table' || msg.display === 'table+chart') && msg.rows && msg.rows.length > 0 && (
+              <div className="mt-2 overflow-x-auto border border-[#222] rounded">
+                <StockTable rows={msg.rows} />
+              </div>
+            )}
+
+            {/* 차트: 혼합 종목이면 ticker별 분리 */}
+            {msg.display === 'table+chart' && msg.rows && msg.rows.length > 0 && (
+              <StockCharts rows={msg.rows} />
+            )}
+          </div>
+        ))}
+
+        {loading && (
+          <div className="msg-assistant px-4 py-3 rounded-sm text-sm text-[#555]">
+            <span className="text-xs font-medium mr-2">ai</span>
+            <span className="blink">▊</span>
+          </div>
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      <div className="border-t border-[#222] px-4 py-4 max-w-3xl mx-auto w-full">
+        <div className="flex gap-3 items-end">
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                sendMessage()
+              }
+            }}
+            placeholder="예: 삼성전자 최근 1개월 주가를 테이블로 보여줘"
+            rows={2}
+            className="flex-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded px-4 py-3 text-sm text-white placeholder-[#444] focus:outline-none focus:border-[#e8ff47] transition-colors"
+          />
+          <button
+            onClick={() => sendMessage()}
+            disabled={loading || !input.trim()}
+            className="bg-[#e8ff47] text-black text-xs font-bold px-4 py-3 rounded hover:bg-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed h-[52px]"
+            style={{ fontFamily: "'Syne', sans-serif" }}
+          >
+            전송
+          </button>
+        </div>
+        <p className="text-[10px] text-[#333] mt-2 text-center">
+          끝나면 <span className="text-[#555]">세션 종료 & 저장</span> 눌러야 기록돼요
+        </p>
+      </div>
+    </main>
+  )
+}
+
+// ── 통화 포맷 헬퍼 ──────────────────────────────────
+function formatPrice(val: number, market: string): string {
+  const isKrw = ['KOSPI', 'KOSDAQ'].includes(market)
+  return isKrw ? val.toLocaleString() + '원' : '$' + val.toFixed(2)
+}
+
+// ── 날짜 포맷 헬퍼: YYYYMMDD → MM/DD ───────────────
+function formatDate(raw: string): string {
+  const s = String(raw).replace(/-/g, '')
+  if (s.length === 8) return `${s.slice(4, 6)}/${s.slice(6, 8)}`
+  return raw
+}
+
+// ── 테이블 컴포넌트 ──────────────────────────────────
+function StockTable({ rows }: { rows: any[] }) {
+  if (!rows.length) return null
+  const cols = Object.keys(rows[0])
+
+  function formatCell(key: string, val: any, row: any): string {
+    if (val === null || val === undefined) return '-'
+    if (key === 'volume') return Number(val).toLocaleString()
+    if (key === 'date') return formatDate(String(val))
+    if (['open', 'high', 'low', 'close'].includes(key)) {
+      return formatPrice(Number(val), row.market ?? '')
+    }
+    return String(val)
+  }
+
+  const COL_LABEL: Record<string, string> = {
+    ticker: '종목코드', name: '종목명', market: '시장', date: '날짜',
+    open: '시가', high: '고가', low: '저가', close: '종가', volume: '거래량',
+  }
+
+  return (
+    <table>
+      <thead>
+        <tr>
+          {cols.map(c => <th key={c}>{COL_LABEL[c] ?? c}</th>)}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row, i) => (
+          <tr key={i}>
+            {cols.map(c => <td key={c}>{formatCell(c, row[c], row)}</td>)}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
+// ── 차트 분기: 혼합 종목이면 ticker별 분리 ───────────
+function StockCharts({ rows }: { rows: any[] }) {
+  const hasData = rows.length > 1 && 'close' in rows[0] && 'date' in rows[0]
+  if (!hasData) return null
+
+  // ticker 컬럼이 있으면 종목별로 분리
+  const tickers = rows[0].ticker !== undefined
+    ? [...new Set(rows.map((r: any) => r.ticker))] as string[]
+    : [null]
+
+  if (tickers.length <= 1) {
+    return (
+      <div className="mt-2">
+        <StockChart rows={rows} />
+      </div>
+    )
+  }
+
+  // 혼합 종목: ticker별 차트 분리
+  return (
+    <div className="mt-2 space-y-3">
+      {tickers.map(ticker => {
+        const tickerRows = rows.filter((r: any) => r.ticker === ticker)
+        const market = tickerRows[0]?.market ?? ''
+        const label = tickerRows[0]?.name ? `${tickerRows[0].name} (${ticker})` : ticker
+        return (
+          <div key={ticker}>
+            <p className="text-[11px] text-[#888] mb-1 pl-1">{label} · {market}</p>
+            <StockChart rows={tickerRows} />
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ── 단일 차트 컴포넌트 ────────────────────────────────
+function StockChart({ rows }: { rows: any[] }) {
+  const hasData = rows.length > 1 && 'close' in rows[0] && 'date' in rows[0]
+  if (!hasData) return null
+
+  const sorted = [...rows].sort((a, b) => String(a.date).localeCompare(String(b.date)))
+  const closes = sorted.map(r => Number(r.close))
+  const dates = sorted.map(r => String(r.date))
+  const market = sorted[0]?.market ?? ''
+
+  const W = 600, H = 200, PAD = { top: 16, right: 16, bottom: 32, left: 68 }
+  const chartW = W - PAD.left - PAD.right
+  const chartH = H - PAD.top - PAD.bottom
+
+  const minV = Math.min(...closes)
+  const maxV = Math.max(...closes)
+  const range = maxV - minV || 1
+
+  function xPos(i: number) { return PAD.left + (i / (closes.length - 1)) * chartW }
+  function yPos(v: number) { return PAD.top + chartH - ((v - minV) / range) * chartH }
+
+  const polyline = closes.map((v, i) => `${xPos(i)},${yPos(v)}`).join(' ')
+
+  const step = Math.max(1, Math.floor(dates.length / 6))
+  const xLabelIdxs = dates
+    .map((_, i) => i)
+    .filter(i => i % step === 0 || i === dates.length - 1)
+
+  const yTicks = [0, 0.33, 0.66, 1].map(t => minV + t * range)
+  const isKrw = ['KOSPI', 'KOSDAQ'].includes(market)
+
+  return (
+    <div className="border border-[#222] rounded p-2 bg-[#0a0a0a]">
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ maxWidth: W }}>
+        {yTicks.map((v, i) => (
+          <line key={i} x1={PAD.left} x2={W - PAD.right} y1={yPos(v)} y2={yPos(v)}
+            stroke="#1e1e1e" strokeWidth="1" />
+        ))}
+        {yTicks.map((v, i) => (
+          <text key={i} x={PAD.left - 6} y={yPos(v) + 4} textAnchor="end"
+            fill="#555" fontSize="10">
+            {isKrw
+              ? (v >= 1000 ? (v / 1000).toFixed(0) + 'k' : v.toFixed(0))
+              : '$' + v.toFixed(1)}
+          </text>
+        ))}
+        {xLabelIdxs.map((idx, i) => (
+          <text key={i} x={xPos(idx)} y={H - 4} textAnchor="middle"
+            fill="#555" fontSize="9">
+            {formatDate(dates[idx])}
+          </text>
+        ))}
+        <polyline points={polyline} fill="none" stroke="#e8ff47" strokeWidth="1.5" />
+        <circle cx={xPos(0)} cy={yPos(closes[0])} r="3" fill="#e8ff47" />
+        <circle cx={xPos(closes.length - 1)} cy={yPos(closes[closes.length - 1])} r="3" fill="#e8ff47" />
+      </svg>
+    </div>
+  )
 }
