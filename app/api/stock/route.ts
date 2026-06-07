@@ -50,6 +50,9 @@ market 값: 'KOSPI', 'KOSDAQ', 'NASDAQ', 'NYSE'
   FROM stock_prices sp
   JOIN stocks s ON sp.ticker = s.ticker AND sp.market = s.market
   WHERE s.name LIKE '%LG전자%'
+  AND sp.date >= strftime('%Y%m%d', date('now', '-1 month'))
+  ORDER BY sp.date ASC
+  LIMIT 100
 
 규칙:
 - 반드시 JSON만 반환 (다른 텍스트 없이):
@@ -60,18 +63,26 @@ market 값: 'KOSPI', 'KOSDAQ', 'NASDAQ', 'NYSE'
   "table"      → 여러 행 데이터 (기간별 주가, 순위, 비교 등)
   "table+chart"→ 시계열 데이터 (1주일 이상 기간, 추세 파악용)
   "ask"        → 데이터는 있는데 표현 방식이 애매한 경우 (사용자에게 물어봄)
-- SELECT 결과에 반드시 market 컬럼 포함
+- SELECT 결과에 반드시 sp.market 컬럼 포함 (통화 표기에 필수)
 - SELECT만 사용, LIMIT 최대 100
 - 오늘: ${todayYYYYMMDD()} (YYYYMMDD 형식)
-- date 컬럼은 'YYYYMMDD' 형식 문자열 (예: '20260401')
-- 특정 월: date >= '20260601' AND date <= '20260630'
+- date 컬럼은 'YYYYMMDD' 형식 문자열 (예: '20260601')
+
+날짜 함수 규칙 (SQLite 전용 — MySQL 함수 절대 사용 금지):
+- month(), year(), day() 사용 금지
+- 특정 월 필터: substr(date,1,6) = '202605'
+- 특정 연도 필터: substr(date,1,4) = '2026'
+- 날짜 비교는 문자열 비교: date >= '20260101'
 - 최근 1개월: date >= strftime('%Y%m%d', date('now', '-1 month'))
 - 최근 1주일: date >= strftime('%Y%m%d', date('now', '-7 days'))
+- 최근 1년: date >= strftime('%Y%m%d', date('now', '-1 year'))
+- strftime에 date 컬럼 직접 사용 금지 (YYYYMMDD 문자열이라 파싱 안 됨)
+- 요일 필터 사용 금지
+
 - 데이터로 답할 수 없는 질문이면: { "sql": null, "explainable": false, "display": "chat", "tickerNames": [] }`
 
 // ── 종목 후보 검색 (미매칭 시 사용) ────────────────
 async function findTickerCandidates(client: any, name: string): Promise<string[]> {
-  // 입력값에서 공백/특수문자 제거 후 부분 검색
   const keyword = name.replace(/[()（）\s]/g, '').slice(0, 10)
   try {
     const rs = await client.execute({
@@ -90,7 +101,6 @@ function buildAnswerPrompt(question: string, sql: string, rows: any[], display: 
     ? '\n- 데이터는 테이블/차트로 별도 표시되므로 숫자를 일일이 나열하지 말고 전체 흐름/특징 위주로 요약해줘'
     : ''
 
-  // 통화 힌트: rows에 market 있으면 명시
   const markets = [...new Set(rows.map((r: any) => r.market).filter(Boolean))]
   const currencyHint = markets.length > 0
     ? `\n- 통화: KOSPI/KOSDAQ 종목은 원(₩), NASDAQ/NYSE 종목은 달러($) 단위로 표기 (이 쿼리의 market: ${markets.join(', ')})`
@@ -184,7 +194,7 @@ export async function POST(req: NextRequest) {
     // SQL 검증
     validateSQL(parsed.sql)
     console.log('[SQL]', parsed.sql)
-      
+
     // 2단계: Turso 쿼리 실행
     const client = getTursoClient()
     let rows: any[] = []
@@ -205,7 +215,6 @@ export async function POST(req: NextRequest) {
         }
 
         if (allCandidates.length > 0) {
-          // 후보가 있으면 LLM한테 매칭 판단 맡기기
           const matchResult = await callStockSQLLLM(
             [{
               role: 'user',
@@ -224,7 +233,6 @@ DB에 있는 후보 종목들: ${allCandidates.join(' / ')}
           } catch { /* 파싱 실패 시 후보 목록만 보여줌 */ }
 
           if (matchParsed.matched && matchParsed.confidence === 'high') {
-            // 신뢰도 높으면 자동 재검색 안내
             return NextResponse.json({
               content: `"${parsed.tickerNames.join(', ')}"을 찾지 못했어요. 혹시 "${matchParsed.matched.split(' (')[0]}"을 말씀하신 건가요? 맞다면 다시 질문해 주세요.`,
               display: 'chat',
@@ -233,7 +241,6 @@ DB에 있는 후보 종목들: ${allCandidates.join(' / ')}
               dataSource: 'llm',
             })
           } else {
-            // 신뢰도 낮으면 후보 목록 전달
             return NextResponse.json({
               content: `"${parsed.tickerNames.join(', ')}"에 해당하는 종목을 찾지 못했어요.\n\nDB에서 비슷한 종목:\n${allCandidates.map(c => `• ${c}`).join('\n')}\n\n정확한 종목명으로 다시 질문해 주세요.`,
               display: 'chat',

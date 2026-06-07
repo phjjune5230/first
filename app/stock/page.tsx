@@ -14,7 +14,7 @@ type Message = {
 
 export default function StockPage() {
   const [messages, setMessages] = useState<Message[]>([
-    { role: 'assistant', content: '안녕하세요! 주식 비서예요.\n삼성전자 최근 1개월 주가, KOSPI 거래량 상위 종목 등 DB 기반으로 답해드려요.' }
+    { role: 'assistant', content: '안녕하세요! 주식 데이터 무엇이든 물어보세요.' }
   ])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -229,6 +229,7 @@ export default function StockPage() {
 // ── 통화 포맷 헬퍼 ──────────────────────────────────
 function formatPrice(val: number, market: string): string {
   const isKrw = ['KOSPI', 'KOSDAQ'].includes(market)
+  if (!market) return val.toLocaleString()
   return isKrw ? val.toLocaleString() + '원' : '$' + val.toFixed(2)
 }
 
