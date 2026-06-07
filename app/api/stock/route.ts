@@ -23,6 +23,10 @@ function validateSQL(sql: string): void {
       throw new Error(`허용되지 않는 SQL 키워드: ${kw}`)
     }
   }
+  // stock_prices 포함 쿼리면 날짜 조건 필수
+  if (normalized.includes('STOCK_PRICES') && !normalized.includes('DATE')) {
+    throw new Error('날짜 조건이 없는 쿼리는 실행할 수 없습니다.')
+  }
 }
 
 // ── 오늘 날짜 YYYYMMDD ──────────────────────────────
@@ -79,19 +83,7 @@ market 값: 'KOSPI', 'KOSDAQ', 'NASDAQ', 'NYSE'
 
 - 데이터로 답할 수 없는 질문이면: { "sql": null, "explainable": false, "display": "chat", "tickerNames": [] }`
 
-// ── 종목 후보 검색 (미매칭 시 사용) ────────────────
-async function findTickerCandidates(client: any, name: string): Promise<string[]> {
-  const keyword = name.replace(/[()（）\s]/g, '').slice(0, 10)
-  try {
-    const rs = await client.execute({
-      sql: `SELECT name, market FROM stocks WHERE name LIKE ? LIMIT 5`,
-      args: [`%${keyword}%`],
-    })
-    return rs.rows.map((r: any) => `${r[0]} (${r[1]})`)
-  } catch {
-    return []
-  }
-}
+
 
 // ── 3단계: 데이터 → 자연어 답변 프롬프트 ──────────
 function buildAnswerPrompt(question: string, sql: string, rows: any[], display: string): string {
@@ -173,19 +165,22 @@ export async function POST(req: NextRequest) {
       })
     }
 
-    // display === 'confirm': 정확 매칭 실패, LIKE 후보 종목 컨펌 요청
-    if (parsed.display === 'confirm' && parsed.sql) {
-      validateSQL(parsed.sql)
+    // display === 'confirm': 정확 매칭 실패, stocks만 직접 조회해서 후보 컨펌 요청
+    if (parsed.display === 'confirm' && parsed.tickerNames && parsed.tickerNames.length > 0) {
       const client = getTursoClient()
       let candidates: string[] = []
       try {
-        const rs = await client.execute(parsed.sql)
-        candidates = [...new Set(rs.rows.map((r: any) => `${r[0]} (${r[2]})`))] // name (market)
+        const keyword = parsed.tickerNames[0].replace(/[()（）\s]/g, '').slice(0, 10)
+        const rs = await client.execute({
+          sql: `SELECT name, market FROM stocks WHERE name LIKE ? LIMIT 10`,
+          args: [`%${keyword}%`],
+        })
+        candidates = rs.rows.map((r: any) => `${r[0]} (${r[1]})`)
       } finally {
         client.close()
       }
       return NextResponse.json({
-        content: `"${parsed.tickerNames?.[0]}"에 해당하는 종목을 찾지 못했어요.\n\nDB에서 비슷한 종목:\n${candidates.map(c => `• ${c}`).join('\n')}\n\n정확한 종목명으로 다시 질문해 주세요.`,
+        content: `"${parsed.tickerNames[0]}"에 해당하는 종목을 찾지 못했어요.\n\nDB에서 비슷한 종목:\n${candidates.map(c => `• ${c}`).join('\n')}\n\n정확한 종목명으로 다시 질문해 주세요.`,
         display: 'chat',
         provider: validProvider,
         availableProviders: ALL_PROVIDERS,
@@ -222,51 +217,7 @@ export async function POST(req: NextRequest) {
         return obj
       })
 
-      // ── 종목 미매칭 감지: rows가 비었고 tickerNames가 있을 때 ──
-      if (rows.length === 0 && parsed.tickerNames && parsed.tickerNames.length > 0) {
-        const allCandidates: string[] = []
-        for (const name of parsed.tickerNames) {
-          const candidates = await findTickerCandidates(client, name)
-          allCandidates.push(...candidates)
-        }
 
-        if (allCandidates.length > 0) {
-          const matchResult = await callStockSQLLLM(
-            [{
-              role: 'user',
-              content: `사용자가 "${parsed.tickerNames.join(', ')}"을 검색했는데 DB에서 찾지 못했어.
-DB에 있는 후보 종목들: ${allCandidates.join(' / ')}
-이 중 사용자가 원하는 종목과 가장 가까운 것을 골라서 JSON만 반환해. 다른 텍스트 없이.
-{ "matched": "LG전자 (KOSPI)", "confidence": "high" }
-확실하지 않으면 confidence를 "low"로 설정해.`,
-            }],
-            ''
-          )
-
-          let matchParsed: { matched?: string; confidence?: string } = {}
-          try {
-            matchParsed = JSON.parse(matchResult.content.replace(/```json|```/g, '').trim())
-          } catch { /* 파싱 실패 시 후보 목록만 보여줌 */ }
-
-          if (matchParsed.matched && matchParsed.confidence === 'high') {
-            return NextResponse.json({
-              content: `"${parsed.tickerNames.join(', ')}"을 찾지 못했어요. 혹시 "${matchParsed.matched.split(' (')[0]}"을 말씀하신 건가요? 맞다면 다시 질문해 주세요.`,
-              display: 'chat',
-              provider: validProvider,
-              availableProviders: ALL_PROVIDERS,
-              dataSource: 'llm',
-            })
-          } else {
-            return NextResponse.json({
-              content: `"${parsed.tickerNames.join(', ')}"에 해당하는 종목을 찾지 못했어요.\n\nDB에서 비슷한 종목:\n${allCandidates.map(c => `• ${c}`).join('\n')}\n\n정확한 종목명으로 다시 질문해 주세요.`,
-              display: 'chat',
-              provider: validProvider,
-              availableProviders: ALL_PROVIDERS,
-              dataSource: 'llm',
-            })
-          }
-        }
-      }
     } finally {
       client.close()
     }
