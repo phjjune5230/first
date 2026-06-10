@@ -67,7 +67,7 @@ export default function ChatWindow({
   const [loading, setLoading] = useState(false)
   const [sessionActive, setSessionActive] = useState(false)
   const [selectedLang, setSelectedLang] = useState<TTSLanguage>('en-US')
-  const [selectedMode, setSelectedMode] = useState<TTSMode>(1.4)
+  const [selectedMode, setSelectedMode] = useState<TTSMode>('groq')
   const [groqStyle, setGroqStyle] = useState<GroqStyle>('natural')
   const [speaking, setSpeaking] = useState(false)
   const [listening, setListening] = useState(false)
@@ -196,6 +196,25 @@ export default function ChatWindow({
       }
 
       setMessages(nextMessages)
+
+      // Groq 모드일 때 예문 전체 미리 캐싱 (백그라운드)
+      if (selectedMode === 'groq' && Array.isArray(data.examples)) {
+        const toCache = data.examples
+          .filter((item: any) => item?.sentence || item?.text)
+          .map((item: any) => ({ text: item.sentence ?? item.text ?? '', speakerIndex: item.speakerIndex }))
+        toCache.forEach(({ text, speakerIndex }: { text: string; speakerIndex?: number }) => {
+          const cacheKey = `${text}__${groqStyle}`
+          if (!audioCacheRef.current.has(cacheKey)) {
+            fetch('/api/tts', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text, speakerIndex, style: groqStyle }),
+            }).then(res => res.ok ? res.blob() : null)
+              .then(blob => { if (blob) audioCacheRef.current.set(cacheKey, URL.createObjectURL(blob)) })
+              .catch(() => {})
+          }
+        })
+      }
     } catch (e) {
       console.error(e)
     } finally {

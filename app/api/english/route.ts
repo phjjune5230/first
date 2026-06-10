@@ -15,23 +15,22 @@ export async function POST(req: NextRequest) {
     try {
       const validProvider = validateProvider(provider)
       const result = await callEnglishLLMWithProvider(
-        [{ role: 'user', content: `다음 대화를 분석해서 JSON만 반환해. 다른 텍스트 없이 JSON만.
-{
-  "summary": "오늘 공부한 내용 한 줄 요약",
-  "notes": "특이사항, 헷갈렸던 것",
-  "weak_points": ["구체적인 약점1", "구체적인 약점2"],
-  "learned_expressions": ["오늘 배운 표현1", "오늘 배운 표현2"],
-  "plan_update": "오늘 학습 결과를 반영한 앞으로의 학습 계획. 기존 계획에서 수정/보완할 내용 상세하게 작성."
-}
-대화:
-${messages.map((m: { role: string; content: string }) => `${m.role}: ${m.content}`).join('\n')}` }],
+        [{ role: 'user', content: `다음 대화를 분석해서 JSON만 반환해. 다른 텍스트 없이 JSON만.\n{\n  "summary": "오늘 공부한 내용 한 줄 요약",\n  "notes": "특이사항, 헷갈렸던 것",\n  "weak_points": ["구체적인 약점1", "구체적인 약점2"],\n  "learned_expressions": ["오늘 배운 표현1", "오늘 배운 표현2"],\n  "plan_update": "오늘 학습 결과를 반영한 앞으로의 학습 계획. 기존 계획에서 수정/보완할 내용 상세하게 작성."\n}\n대화:\n${messages.map((m: { role: string; content: string }) => `${m.role}: ${m.content}`).join('\n')}` }],
         '',
         validProvider
       )
-      const cleaned = result.content.replace(/```json|```/g, '').trim()
-      const parsed = JSON.parse(cleaned)
 
-      // daily_study 저장
+      // [Fix 1] JSON 파싱 실패 시 빈 응답 대신 fallback 값으로 저장
+      let parsed: Record<string, any> = {}
+      try {
+        const cleaned = result.content.replace(/```json|```/g, '').trim()
+        parsed = JSON.parse(cleaned)
+      } catch {
+        console.error('Session JSON parse failed, using fallback:', result.content)
+        parsed = { summary: '세션 요약 파싱 실패', notes: '', weak_points: [], learned_expressions: [], plan_update: null }
+      }
+
+      // [Fix 3] weak_points / learned_expressions 누적 — appendDailyStudy에 올바르게 전달
       await appendDailyStudy({
         date: new Date().toISOString().split('T')[0],
         summary: parsed.summary || '',
@@ -45,12 +44,20 @@ ${messages.map((m: { role: string; content: string }) => `${m.role}: ${m.content
         await updateState({ plan: parsed.plan_update })
       }
 
-      await updateState({ current_day: (state?.current_day || 0) + 1 })
+      // [Fix 2] current_day 증가 + 7일 완료 시 week 전환
+      const currentDay = state?.current_day || 0
+      const currentWeek = state?.current_week || 1
+      const nextDay = currentDay + 1
+      if (nextDay > 7) {
+        await updateState({ current_day: 1, current_week: currentWeek + 1 })
+      } else {
+        await updateState({ current_day: nextDay })
+      }
 
       return NextResponse.json({ ok: true, log: parsed })
     } catch (err) {
       console.error('Save session error:', err)
-      return NextResponse.json({ ok: false, error: '요약 파싱 실패' })
+      return NextResponse.json({ ok: false, error: '세션 저장 실패' })
     }
   }
 
@@ -69,14 +76,27 @@ ${messages.map((m: { role: string; content: string }) => `${m.role}: ${m.content
     const systemPrompt = buildSystemPrompt(state)
     const result = await handleEnglishChat(messages, systemPrompt, validProvider, getDefaultOptions('english'))
 
-    // goal/plan 설정 처리
+    // [Fix 5] goal/plan 설정 처리 — 중첩 중괄호에 안전한 파싱
     if (result.content.includes('[SETUP_READY]')) {
-      const jsonMatch = result.content.match(/\[SETUP_READY\]\s*({[\s\S]*?})\s*(?:\[|$)/)
-      if (jsonMatch) {
-        try {
-          const setup = JSON.parse(jsonMatch[1])
-          await updateState({ goal: setup.goal, plan: setup.plan })
-        } catch { console.error('setup parse error') }
+      const setupIdx = result.content.indexOf('[SETUP_READY]')
+      const jsonStart = result.content.indexOf('{', setupIdx)
+      if (jsonStart !== -1) {
+        // 중괄호 depth 카운팅으로 올바른 JSON 범위 추출
+        let depth = 0
+        let jsonEnd = -1
+        for (let i = jsonStart; i < result.content.length; i++) {
+          if (result.content[i] === '{') depth++
+          else if (result.content[i] === '}') {
+            depth--
+            if (depth === 0) { jsonEnd = i; break }
+          }
+        }
+        if (jsonEnd !== -1) {
+          try {
+            const setup = JSON.parse(result.content.slice(jsonStart, jsonEnd + 1))
+            await updateState({ goal: setup.goal, plan: setup.plan })
+          } catch { console.error('setup parse error') }
+        }
       }
     }
 
@@ -154,7 +174,7 @@ ${learnedExpressions.length > 0 ? learnedExpressions.slice(-20).join(', ') : '�
 
 ▶ 1단계 - 예문 인풋 (총 3턴)
 - 매 턴마다 새로운 실생활 표현 예문 5개 제시
-- 각 예문에 한국어 뉘앙스 설명 포함
+- 각 예문에 한국어 설명 포함
 - 5개 제시 후: "발음 들어보시고, 준비되면 다음 턴으로 넘어갈까요?"
 - 3턴 완료 후 2단계로
 
@@ -190,15 +210,17 @@ ${learnedExpressions.length > 0 ? learnedExpressions.slice(-20).join(', ') : '�
 {
   "text": "설명, 안내, 피드백 텍스트",
   "examples": [
-    { "speaker": "John", "sentence": "예문", "translation": "한국어 뉘앙스 설명", "type": "example" },
-    { "speaker": "Sarah", "sentence": "예문", "translation": "한국어 뉘앙스 설명", "type": "example" }
+    { "speaker": "John", "sentence": "예문", "translation": "한국어 설명", "type": "example" },
+    { "speaker": "Sarah", "sentence": "예문", "translation": "한국어 설명", "type": "example" }
   ]
 }
 예문/상황극은 examples에, 설명/안내/피드백은 text에 담아.
 예문이 없으면 examples는 빈 배열로.
 
 translation 규칙:
-- 단순 직역 말고, 실제 쓰이는 뉘앙스/상황 중심으로 한국어로 설명 (예: "거절할 때 부드럽게 쓰는 표현")
+- 형식: "[직역/의미] + [뉘앙스/상황 설명]" 두 가지를 함께 작성
+- 예시: "나 요즘 좀 지쳐있어. → 감정을 담담하게 털어놓을 때 쓰는 캐주얼한 표현"
+- 예시: "그냥 확인하려고요. → 부탁/요청 앞에 부드럽게 붙이는 전형적인 비즈니스 표현"
 - output_prompt 타입은 translation 생략 가능
 
 type 규칙:
