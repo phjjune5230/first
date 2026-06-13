@@ -8,10 +8,10 @@ import { callEnglishLLMWithProvider, ALL_PROVIDERS } from '@/lib/llm'
 export async function POST(req: NextRequest) {
   const body = await req.json()
   const { messages, action, provider } = body
-  const state = await getState()
 
   // 세션 저장
   if (action === 'save_session') {
+    const state = await getState()
     try {
       const validProvider = validateProvider(provider)
       const result = await callEnglishLLMWithProvider(
@@ -39,20 +39,18 @@ export async function POST(req: NextRequest) {
         learned_expressions: parsed.learned_expressions || [],
       })
 
-      // plan 업데이트
-      if (parsed.plan_update) {
-        await updateState({ plan: parsed.plan_update })
-      }
-
-      // [Fix 2] current_day 증가 + 7일 완료 시 week 전환
+      // [Fix 2] current_day 증가 + plan 업데이트 한 번에 처리
       const currentDay = state?.current_day || 0
       const currentWeek = state?.current_week || 1
       const nextDay = currentDay + 1
-      if (nextDay > 7) {
-        await updateState({ current_day: 1, current_week: currentWeek + 1 })
-      } else {
-        await updateState({ current_day: nextDay })
-      }
+      const dayUpdate = nextDay > 7
+        ? { current_day: 1, current_week: currentWeek + 1 }
+        : { current_day: nextDay }
+
+      await updateState({
+        ...dayUpdate,
+        ...(parsed.plan_update ? { plan: parsed.plan_update } : {}),
+      })
 
       return NextResponse.json({ ok: true, log: parsed })
     } catch (err) {
@@ -63,6 +61,7 @@ export async function POST(req: NextRequest) {
 
   // undo_day
   if (action === 'undo_day') {
+    const state = await getState()
     if (state && state.current_day > 1) {
       await updateState({ current_day: state.current_day - 1 })
       return NextResponse.json({ ok: true, message: `${state.current_day - 1}일차로 되돌렸어요.` })
@@ -72,6 +71,7 @@ export async function POST(req: NextRequest) {
 
   // 일반 채팅
   try {
+    const state = await getState()
     const validProvider = validateProvider(provider)
     const systemPrompt = buildSystemPrompt(state)
     const result = await handleEnglishChat(messages, systemPrompt, validProvider, getDefaultOptions('english'))

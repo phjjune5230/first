@@ -1,0 +1,119 @@
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+개인 공부 & 비서 앱 — 프로젝트 설명
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+▌ 한 줄 요약
+혼자 쓰는 개인용 올인원 앱. 영어 공부, 주식 분석, 개인 목표 관리, 잡담, 코드 자동 수정까지
+LLM 여러 개를 갈아끼우며 쓰는 구조.
+
+▌ 기술 스택
+- Next.js 15 (App Router) + TypeScript
+- Supabase (주 DB: 학습 상태, 대화 기록, LLM 에러 카운트)
+- Turso/libSQL (주식 데이터 전용 DB)
+- 배포: Vercel
+- 음성: Groq Whisper(STT) + Groq TTS / Web Speech API 병행
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▌ 기능 목록
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. 영어 공부 (/english)
+   - 최초 1회 목표 설정 → LLM이 커리큘럼 자동 생성 → Supabase study_state에 저장
+   - 세션 구조: 예문 인풋(3턴×5개) → 상황극(4상황) → 아웃풋 연습(3회) → 마무리
+   - 세션 종료 시 LLM이 대화 분석 → 요약/약점/배운표현/계획 업데이트 자동 저장
+   - TTS로 예문 발음 청취 가능 (Groq TTS, speakerIndex로 화자 구분)
+   - STT로 아웃풋 연습 음성 답변 가능 (Whisper / Web Speech)
+   - LLM 응답 형식: JSON { text, examples[] } — examples는 UI에서 말풍선 분리 렌더링
+
+2. 주식 비서 (/stock)
+   - Turso DB에 한국(pykrx)·미국(Polygon.io) 주가 데이터 매일 자동 수집 (GitHub Actions)
+   - 자연어 질문 → Text-to-SQL → 쿼리 실행 → LLM 자연어 답변 3단계 파이프라인
+   - SQL 생성은 경량 모델(Groq llama-3.3-70b) 고정, 답변은 사용자 선택 provider 사용
+
+3. 개인 비서 (/assistant)
+   - 목표(goals) CRUD: LLM function calling으로 대화 중 자동 추가/수정
+   - 지원 provider: gemini, groq, gpt-oss (function calling 지원 모델만)
+   - 상태: category / subcategory / status(진행중·완료·미완료·검토예정) / due_date
+
+4. 잡담 (/smalltalk)
+   - 대화 목록 관리 (생성/삭제/이어하기)
+   - 20턴마다 자동 요약 → system prompt에 주입해서 장기 기억 유지
+   - "웹서치" 키워드 감지 시 provider별로 웹서치 방식 자동 전환
+     · groq/gpt-oss → compound-beta-mini
+     · gemini → native googleSearch 툴
+     · 기타 → compound fallback
+
+5. 코드봇 (/codebot)
+   - GitHub API로 레포 파일 트리 읽기 → LLM이 intent 판단(review/modify/approve/commit/rollback/chat)
+   - modify: LLM이 수정 코드 생성 → 사용자 확인 → 커밋 버튼
+   - rollback: 커밋 히스토리 표시 → 선택한 SHA로 revert 커밋 생성
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▌ LLM 구조 (lib/llm.ts)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+지원 provider: gemini, groq, gpt-oss, openai, deepseek, kimi, glm, grok, claude
+- UI에서 드롭다운으로 provider 선택 → extraRequestData로 route에 전달
+- callLLMDirect: 선택 provider 직접 호출 (영어/주식/잡담/코드봇)
+- callLLMWithPriority: 개인비서 전용, provider 순서대로 fallback
+- 에러 3회 이상이면 해당 provider 비활성 (DB llm_state 테이블에 에러카운트 저장)
+- 에러 카운트 리셋: 자정(Asia/Seoul 기준) 또는 일정 시간 경과 (RESET_MODE로 전환)
+- jsonMode: true 시 provider별 JSON 응답 강제 옵션 활성화
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▌ 공통 컴포넌트 (components/ChatWindow.tsx)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+영어/잡담/코드봇/개인비서가 공통으로 쓰는 채팅 UI.
+- messages 배열을 API에 전달 시 { role, content }만 추려서 전송
+- data.examples 배열이 있으면 말풍선을 type별로 분리 렌더링
+  · example: 예문/상황극 말풍선 (🔊 TTS 버튼 포함)
+  · output_prompt: 아웃풋 연습 말풍선 (🎙 STT 버튼 포함)
+  · text: 일반 설명/피드백
+- Groq TTS 응답은 objectURL로 캐싱 (같은 예문 재생 시 API 재호출 없음)
+- 세션 종료 & 저장 버튼: action: 'save_session' 으로 route 호출
+- undo_day 버튼: 저장 직후 표시, 잘못 저장 시 current_day -1 복구
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▌ DB 구조 (Supabase)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+study_state (단일 row, id 고정)
+  - goal, plan, curriculum
+  - current_week, current_day
+  - daily_studies[]: { date, summary, notes, weak_points[], learned_expressions[] }
+  - learned_expressions[]: 누적 전체 (중복 제거)
+  - weak_points[]: 최근 20개 (중복 제거)
+
+smalltalk_conversations
+  - title, summary (누적 요약)
+  - last_messages: { summarizedUpTo: N } (몇 번째까지 요약됐는지 추적)
+
+llm_state (단일 row)
+  - current_provider
+  - error_counts: { [provider]: count }
+  - last_error_at: { [provider]: ISO string }
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▌ 접근 제한
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+홈 화면(/)에 6자리 PIN 잠금. 개인용이라 서버 인증 없이 클라이언트 비교로만 처리.
+비밀번호 변경: app/page.tsx 상단 const PASSWORD = '...' 한 줄만 수정.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+▌ 환경변수 (.env.local)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+NEXT_PUBLIC_SUPABASE_URL
+NEXT_PUBLIC_SUPABASE_ANON_KEY
+GROQ_API_KEY
+GEMINI_API_KEY
+OPENAI_API_KEY
+DEEPSEEK_API_KEY
+KIMI_API_KEY
+GLM_API_KEY
+GROK_API_KEY
+ANTHROPIC_API_KEY
+GITHUB_TOKEN / GITHUB_OWNER / GITHUB_REPO  (코드봇 전용)
+TURSO_DATABASE_URL / TURSO_AUTH_TOKEN       (주식 DB 전용)

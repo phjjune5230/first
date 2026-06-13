@@ -86,6 +86,8 @@ export function parseExampleResponse(raw: string) {
         .filter((item: ExampleItem) => item.sentence)
       return { text: typeof parsed.text === 'string' ? parsed.text.trim() : '', examples }
     }
-  } catch { /* fallback */ }
+  } catch (err) {
+    console.error('[parseExampleResponse] JSON parse failed:', err, '\nraw:', raw.slice(0, 200))
+  }
   return { text: '', examples: [] as ExampleItem[] }
 }

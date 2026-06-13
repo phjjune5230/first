@@ -129,7 +129,9 @@ async function callProvider(
       parts: [{ text: m.content }],
     }))
     const firstUserIdx = history.findIndex(m => m.role === 'user')
-    const chat = model.startChat({ history: firstUserIdx >= 0 ? history.slice(firstUserIdx) : [] })
+    // history에서 마지막 메시지 제외 (sendMessage로 별도 전송)
+    const historySlice = firstUserIdx >= 0 ? history.slice(firstUserIdx, -1) : []
+    const chat = model.startChat({ history: historySlice })
     const result = await chat.sendMessage(messages[messages.length - 1].content)
     return result.response.text()
   }
@@ -311,7 +313,6 @@ async function callLLMWithPriority(messages: { role: string; content: string }[]
       return { content: result, provider: p }
     } catch (err: unknown) {
       console.log(`[LLM] ${p} 호출 실패:`, err)
-      const state = await getLLMState()
       await recordError(p, state)
       continue
     }

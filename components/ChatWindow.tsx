@@ -77,6 +77,14 @@ export default function ChatWindow({
   const bottomRef = useRef<HTMLDivElement>(null)
   const audioCacheRef = useRef<Map<string, string>>(new Map()) // cacheKey → objectURL
 
+  // 컴포넌트 unmount 시 objectURL 일괄 해제
+  useEffect(() => {
+    return () => {
+      audioCacheRef.current.forEach(url => URL.revokeObjectURL(url))
+      audioCacheRef.current.clear()
+    }
+  }, [])
+
   useEffect(() => {
     if (initialMessages && initialMessages.length > 0) {
       const restored = initialMessages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }))
@@ -162,10 +170,15 @@ export default function ChatWindow({
     setLoading(true)
 
     try {
+      // API에 보낼 때: user 전체 + assistant 중 type:'text'인 것만 (examples는 UI 전용)
+      const historyForAPI = newMessages
+        .filter(m => m.role === 'user' || m.type === 'text' || m.type === undefined)
+        .map(({ role, content }) => ({ role, content }))
+
       const res = await fetch(apiPath, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: newMessages.map(({ role, content }) => ({ role, content })), ...(extraRequestDataRef?.current ?? extraRequestData ?? {}) }),
+        body: JSON.stringify({ messages: historyForAPI, ...(extraRequestDataRef?.current ?? extraRequestData ?? {}) }),
       })
       const data = await res.json()
       onApiResponse?.(data)
